@@ -36,7 +36,9 @@
     "category": "Utility",
     "fileAssociations": [
       {
-        "ext": ["vault"],
+        "ext": [
+          "vault"
+        ],
         "name": "Encrypted Vault",
         "description": "Encrypted Vault Archive",
         "role": "Viewer"

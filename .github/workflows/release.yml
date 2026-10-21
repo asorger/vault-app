@@ -1,0 +1,146 @@
+name: Release Pipeline
+
+on:
+  push:
+    branches:
+      - release
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Semantic version bump type'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Publish Release
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Configure Strawberry Perl for OpenSSL
+        shell: bash
+        run: |
+          if [ -d "C:/Strawberry/perl/bin" ]; then
+            echo "C:/Strawberry/perl/bin" >> $GITHUB_PATH
+          fi
+
+      - name: Calculate Next Semantic Version
+        id: calc_version
+        shell: bash
+        run: |
+          git fetch --tags --force || true
+          
+          # Find latest semantic tag vX.Y.Z
+          LATEST_TAG=$(git tag -l "v[0-9]*.[0-9]*.[0-9]*" --sort=-v:refname | head -n 1)
+          
+          BUMP="${{ github.event.inputs.bump }}"
+          if [ -z "$BUMP" ]; then
+            BUMP="patch"
+          fi
+          
+          if [ -z "$LATEST_TAG" ]; then
+            VERSION="0.1.0"
+            TAG="v0.1.0"
+          else
+            CLEAN_VER="${LATEST_TAG#v}"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$CLEAN_VER"
+            
+            if [ "$BUMP" = "major" ]; then
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+            elif [ "$BUMP" = "minor" ]; then
+              MINOR=$((MINOR + 1))
+              PATCH=0
+            else
+              PATCH=$((PATCH + 1))
+            fi
+            
+            VERSION="${MAJOR}.${MINOR}.${PATCH}"
+            TAG="v${VERSION}"
+          fi
+          
+          echo "Calculated version: $VERSION ($TAG)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Inject Version into Configuration Files
+        shell: bash
+        run: |
+          node scripts/update-version.cjs "${{ steps.calc_version.outputs.version }}"
+
+      - name: Install Frontend Dependencies
+        run: npm ci
+
+      - name: Quality Gate (Backend Tests)
+        shell: bash
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
+
+      - name: Build Tauri Installers & Publish Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ steps.calc_version.outputs.tag }}
+          releaseName: "Vault ${{ steps.calc_version.outputs.tag }}"
+          releaseBody: "Automated release for Vault ${{ steps.calc_version.outputs.tag }}."
+          releaseDraft: false
+          prerelease: false
+          args: --target x86_64-pc-windows-msvc
+
+      - name: Stage Standalone Portable Executable
+        shell: bash
+        run: |
+          VERSION="${{ steps.calc_version.outputs.version }}"
+          PORTABLE_NAME="Vault-Portable-${VERSION}-x64.exe"
+          
+          if [ -f "src-tauri/target/x86_64-pc-windows-msvc/release/vault-app.exe" ]; then
+            cp "src-tauri/target/x86_64-pc-windows-msvc/release/vault-app.exe" "$PORTABLE_NAME"
+          elif [ -f "src-tauri/target/release/vault-app.exe" ]; then
+            cp "src-tauri/target/release/vault-app.exe" "$PORTABLE_NAME"
+          else
+            echo "Error: Could not locate built standalone executable!"
+            find src-tauri/target -name "*.exe"
+            exit 1
+          fi
+          
+          echo "Portable binary ready: $PORTABLE_NAME"
+
+      - name: Attach Portable Executable to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.calc_version.outputs.tag }}
+          files: Vault-Portable-${{ steps.calc_version.outputs.version }}-x64.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
