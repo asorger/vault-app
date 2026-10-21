@@ -1,0 +1,137 @@
+# ==============================================================================
+# Vault App — .gitignore
+# Production Git Ignore for Tauri v2 (Rust backend + React / Vite frontend)
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. Vault Data & Encrypted Files (DO NOT COMMIT REAL OR TEST VAULTS)
+# ------------------------------------------------------------------------------
+*.vault
+*.vault/
+vault.meta
+index.db
+index.db-wal
+index.db-shm
+*.db
+*.db-wal
+*.db-shm
+blobs/
+*.dat
+staging/
+
+# ------------------------------------------------------------------------------
+# 2. Rust & Cargo Build Artifacts
+# ------------------------------------------------------------------------------
+target/
+src-tauri/target/
+debug/
+release/
+**/*.rs.bk
+*.pdb
+*.ilk
+
+# ------------------------------------------------------------------------------
+# 3. Tauri Generated Files & Bundlers
+# ------------------------------------------------------------------------------
+src-tauri/gen/schemas/
+*.wixobj
+*.wixpdb
+
+# Compiled binaries and installers
+*.exe
+*.msi
+*.dll
+*.so
+*.dylib
+*.dmg
+*.app
+*.deb
+*.rpm
+*.AppImage
+
+# ------------------------------------------------------------------------------
+# 4. Node.js & Frontend Dependencies
+# ------------------------------------------------------------------------------
+node_modules/
+.npm/
+.yarn/
+.pnpm-store/
+
+# ------------------------------------------------------------------------------
+# 5. Frontend Build Outputs & Caches
+# ------------------------------------------------------------------------------
+dist/
+dist-ssr/
+build/
+.vite/
+.turbo/
+.cache/
+
+# ------------------------------------------------------------------------------
+# 6. Environment & Secret Files
+# ------------------------------------------------------------------------------
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.env
+
+# ------------------------------------------------------------------------------
+# 7. Logs & Temporary Files
+# ------------------------------------------------------------------------------
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.tmp
+*.temp
+**/*.backup.*
+**/*.back.*
+
+# ------------------------------------------------------------------------------
+# 8. Testing & Coverage
+# ------------------------------------------------------------------------------
+coverage/
+.nyc_output/
+
+# ------------------------------------------------------------------------------
+# 9. Operating System Metadata
+# ------------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+[Dd]esktop.ini
+$RECYCLE.BIN/
+
+# ------------------------------------------------------------------------------
+# 10. IDE & Editor Files
+# ------------------------------------------------------------------------------
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.swp
+*.swo
+*~
+
+# VS Code — preserve recommended extensions while ignoring personal workspace settings
+.vscode/*
+!.vscode/extensions.json
+
+# ------------------------------------------------------------------------------
+# 11. AI Assistant & Agent Context Files
+# ------------------------------------------------------------------------------
+AGENTS.md
+agents.md
+
