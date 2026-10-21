@@ -46,12 +46,24 @@ jobs:
         with:
           workspaces: './src-tauri -> target'
 
-      - name: Configure Strawberry Perl for OpenSSL
+      - name: Set up Perl (Strawberry)
+        uses: shogo82148/actions-setup-perl@v1
+        with:
+          perl-version: '5.38'
+          distribution: 'strawberry'
+
+      - name: Configure Perl for OpenSSL
+        shell: powershell
+        run: |
+          $perlPath = (Get-Command perl).Source
+          Write-Host "Configured Perl path: $perlPath"
+          "PERL=$perlPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "OPENSSL_SRC_PERL=$perlPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Ensure Perl Maketext module
         shell: bash
         run: |
-          if [ -d "C:/Strawberry/perl/bin" ]; then
-            echo "C:/Strawberry/perl/bin" >> $GITHUB_PATH
-          fi
+          cpanm --notest Locale::Maketext::Simple || true
 
       - name: Calculate Next Semantic Version
         id: calc_version
@@ -143,4 +155,3 @@ jobs:
           files: Vault-Portable-${{ steps.calc_version.outputs.version }}-x64.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
