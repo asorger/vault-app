@@ -1,3 +1,5 @@
+// src/components/workspace/ContextMenu.tsx — Minimalist context menu with warm obsidian surfaces.
+
 import React, { useEffect, useRef } from "react";
 import {
   FolderPlus,
@@ -89,7 +91,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
     <div
       ref={menuRef}
       style={{ top: Math.max(44, clampedY), left: Math.max(8, clampedX) }}
-      className="fixed z-50 w-60 rounded-xl bg-zinc-900/95 backdrop-blur-md border border-zinc-800 shadow-2xl py-1.5 text-sm text-zinc-200 select-none"
+      className="fixed z-50 w-60 rounded-2xl bg-[#1b1817]/95 backdrop-blur-md border border-white/[0.1] shadow-2xl py-1.5 text-xs text-stone-200 select-none animate-in fade-in duration-100"
       onContextMenu={(e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -97,8 +99,8 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
     >
       {menu.targetType === "parent" ? (
         <>
-          <div className="px-3 py-1.5 border-b border-zinc-800/80 mb-1">
-            <p className="text-xs font-medium text-zinc-400 truncate">
+          <div className="px-3.5 py-1.5 border-b border-white/[0.06] mb-1">
+            <p className="text-[11px] font-medium text-stone-400 truncate">
               Parent Folder (..)
             </p>
           </div>
@@ -108,16 +110,16 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
               onGoUp();
               onClose();
             }}
-            className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-indigo-600/20 hover:text-indigo-300 transition-colors text-left"
+            className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-white/[0.06] text-purple-300 transition-colors text-left cursor-pointer"
           >
-            <CornerLeftUp className="w-4 h-4 text-indigo-400" />
+            <CornerLeftUp className="w-4 h-4 text-purple-400" />
             <span>Open Parent Folder (..)</span>
           </button>
         </>
       ) : menu.targetType ? (
         <>
-          <div className="px-3 py-1.5 border-b border-zinc-800/80 mb-1">
-            <p className="text-xs font-medium text-zinc-400 truncate">
+          <div className="px-3.5 py-1.5 border-b border-white/[0.06] mb-1">
+            <p className="text-[11px] font-medium text-stone-400 truncate">
               {isMultiSelect
                 ? `${selectedCount} items selected`
                 : menu.targetName}
@@ -131,16 +133,16 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
                 onOpenTarget();
                 onClose();
               }}
-              className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-indigo-600/20 hover:text-indigo-300 transition-colors text-left"
+              className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-white/[0.06] text-purple-300 transition-colors text-left cursor-pointer"
             >
               {menu.targetType === "folder" ? (
                 <>
-                  <FolderInput className="w-4 h-4 text-indigo-400" />
+                  <FolderInput className="w-4 h-4 text-purple-400" />
                   <span>Open Folder</span>
                 </>
               ) : (
                 <>
-                  <Eye className="w-4 h-4 text-indigo-400" />
+                  <Eye className="w-4 h-4 text-purple-400" />
                   <span>View / Play File</span>
                 </>
               )}
@@ -153,7 +155,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
               onExportTarget();
               onClose();
             }}
-            className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-zinc-800 transition-colors text-left"
+            className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-white/[0.06] transition-colors text-left cursor-pointer"
           >
             <Download className="w-4 h-4 text-emerald-400" />
             <span>
@@ -170,9 +172,9 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
                 onMoveToParent();
                 onClose();
               }}
-              className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-zinc-800 transition-colors text-left"
+              className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-white/[0.06] transition-colors text-left cursor-pointer"
             >
-              <CornerLeftUp className="w-4 h-4 text-zinc-400" />
+              <CornerLeftUp className="w-4 h-4 text-stone-400" />
               <span>Move to Parent Folder (..)</span>
             </button>
           )}
@@ -184,14 +186,14 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
                 onRenameTarget();
                 onClose();
               }}
-              className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-zinc-800 transition-colors text-left"
+              className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-white/[0.06] transition-colors text-left cursor-pointer"
             >
-              <Edit3 className="w-4 h-4 text-zinc-400" />
+              <Edit3 className="w-4 h-4 text-stone-400" />
               <span>Rename</span>
             </button>
           )}
 
-          <div className="my-1 border-t border-zinc-800/80" />
+          <div className="my-1 border-t border-white/[0.06]" />
 
           <button
             type="button"
@@ -199,7 +201,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
               onDeleteTarget();
               onClose();
             }}
-            className="w-full px-3 py-2 flex items-center gap-2.5 text-red-400 hover:bg-red-950/50 hover:text-red-300 transition-colors text-left"
+            className="w-full px-3 py-2 flex items-center gap-2.5 text-rose-400 hover:bg-rose-950/40 hover:text-rose-300 transition-colors text-left cursor-pointer"
           >
             <Trash2 className="w-4 h-4" />
             <span>
@@ -215,7 +217,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
               onImportFiles();
               onClose();
             }}
-            className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-zinc-800 transition-colors text-left"
+            className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-white/[0.06] transition-colors text-left cursor-pointer"
           >
             <Upload className="w-4 h-4 text-emerald-400" />
             <span>Import Files...</span>
@@ -227,7 +229,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
               onImportDirectory();
               onClose();
             }}
-            className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-zinc-800 transition-colors text-left"
+            className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-white/[0.06] transition-colors text-left cursor-pointer"
           >
             <FolderInput className="w-4 h-4 text-emerald-400" />
             <span>Import Folder...</span>
@@ -239,13 +241,13 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
               onNewFolder();
               onClose();
             }}
-            className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-zinc-800 transition-colors text-left"
+            className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-white/[0.06] transition-colors text-left cursor-pointer"
           >
-            <FolderPlus className="w-4 h-4 text-indigo-400" />
+            <FolderPlus className="w-4 h-4 text-purple-400" />
             <span>New Folder</span>
           </button>
 
-          <div className="my-1 border-t border-zinc-800/80" />
+          <div className="my-1 border-t border-white/[0.06]" />
 
           {totalCount > 0 && (
             <button
@@ -254,9 +256,9 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
                 onSelectAll();
                 onClose();
               }}
-              className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-zinc-800 transition-colors text-left"
+              className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-white/[0.06] transition-colors text-left cursor-pointer"
             >
-              <CheckSquare className="w-4 h-4 text-zinc-400" />
+              <CheckSquare className="w-4 h-4 text-stone-400" />
               <span>Select All ({totalCount})</span>
             </button>
           )}
@@ -267,9 +269,9 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
               onRefresh();
               onClose();
             }}
-            className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-zinc-800 transition-colors text-left"
+            className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-white/[0.06] transition-colors text-left cursor-pointer"
           >
-            <RefreshCw className="w-4 h-4 text-zinc-400" />
+            <RefreshCw className="w-4 h-4 text-stone-400" />
             <span>Refresh Folder</span>
           </button>
 
@@ -279,16 +281,16 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
               onViewModeChange(viewMode === "grid" ? "table" : "grid");
               onClose();
             }}
-            className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-zinc-800 transition-colors text-left"
+            className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-white/[0.06] transition-colors text-left cursor-pointer"
           >
             {viewMode === "grid" ? (
               <>
-                <List className="w-4 h-4 text-zinc-400" />
+                <List className="w-4 h-4 text-stone-400" />
                 <span>Switch to List View</span>
               </>
             ) : (
               <>
-                <LayoutGrid className="w-4 h-4 text-zinc-400" />
+                <LayoutGrid className="w-4 h-4 text-stone-400" />
                 <span>Switch to Grid View</span>
               </>
             )}
@@ -296,16 +298,16 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
 
           {canGoUp && (
             <>
-              <div className="my-1 border-t border-zinc-800/80" />
+              <div className="my-1 border-t border-white/[0.06]" />
               <button
                 type="button"
                 onClick={() => {
                   onGoUp();
                   onClose();
                 }}
-                className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-zinc-800 transition-colors text-left"
+                className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-white/[0.06] transition-colors text-left cursor-pointer"
               >
-                <CornerLeftUp className="w-4 h-4 text-zinc-400" />
+                <CornerLeftUp className="w-4 h-4 text-stone-400" />
                 <span>Go to Parent Folder (..)</span>
               </button>
             </>

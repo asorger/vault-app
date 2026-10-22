@@ -4,6 +4,7 @@ export interface VaultInfo {
   id: string;
   name: string;
   vault_path: string;
+  is_compressed?: boolean;
 }
 
 export interface RecentVaultEntry {
@@ -62,6 +63,15 @@ export interface TransferProgressPayload {
   total_items: number;
   bytes_processed: number;
   total_bytes: number;
+}
+
+export interface CompressionProgressPayload {
+  current_file: string;
+  files_completed: number;
+  total_files: number;
+  bytes_processed: number;
+  total_bytes: number;
+  is_complete: boolean;
 }
 
 export interface SkippedFile {

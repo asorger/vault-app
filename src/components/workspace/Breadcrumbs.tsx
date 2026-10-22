@@ -1,3 +1,5 @@
+// src/components/workspace/Breadcrumbs.tsx — Minimalist pill breadcrumb trail for vault folder navigation.
+
 import React from "react";
 import { ChevronRight, FolderLock } from "lucide-react";
 import type { BreadcrumbItem } from "../../types/vault";
@@ -14,7 +16,7 @@ export const Breadcrumbs: React.FC<BreadcrumbsProps> = ({
   onNavigate,
 }) => {
   return (
-    <nav className="flex items-center gap-1 text-sm text-neutral-300 select-none overflow-x-auto py-1 scrollbar-none">
+    <nav className="flex items-center gap-1 text-xs select-none overflow-x-auto py-1 scrollbar-none">
       {breadcrumbs.map((crumb, idx) => {
         const isLast = idx === breadcrumbs.length - 1;
         const isRoot = idx === 0;
@@ -24,24 +26,24 @@ export const Breadcrumbs: React.FC<BreadcrumbsProps> = ({
         return (
           <React.Fragment key={crumb.id || "vault-root"}>
             {idx > 0 && (
-              <ChevronRight className="w-4 h-4 text-neutral-600 shrink-0" />
+              <ChevronRight className="w-3.5 h-3.5 text-stone-600 shrink-0" />
             )}
             <button
               type="button"
               data-drop-folder-id={!isLast ? dropKey : undefined}
               onClick={() => onNavigate(crumb.id)}
-              className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg transition-all shrink-0 ${
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-xl transition-all shrink-0 border ${
                 isDropTarget
-                  ? "bg-indigo-600/35 ring-2 ring-indigo-400 text-white"
+                  ? "bg-purple-950/40 ring-2 ring-purple-400 text-white border-purple-400"
                   : isLast
-                  ? "text-neutral-100 font-semibold bg-neutral-800/80 cursor-default"
-                  : "hover:text-white hover:bg-neutral-800/50 text-neutral-300 cursor-pointer"
+                  ? "text-stone-100 font-semibold bg-[#221e1d] border-white/[0.08] shadow-sm cursor-default"
+                  : "hover:text-stone-100 hover:bg-white/[0.04] text-stone-400 border-transparent cursor-pointer"
               }`}
             >
               {isRoot && (
-                <FolderLock className="w-4 h-4 text-indigo-400 shrink-0" />
+                <FolderLock className="w-3.5 h-3.5 text-purple-400 shrink-0" />
               )}
-              <span>{crumb.name}</span>
+              <span className="truncate max-w-[140px]">{crumb.name}</span>
             </button>
           </React.Fragment>
         );

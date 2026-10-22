@@ -40,17 +40,18 @@ class AppErrorBoundary extends React.Component<
   render() {
     if (this.state.hasError) {
       return (
-        <div className="h-screen w-screen flex flex-col items-center justify-center bg-zinc-950 text-zinc-100 p-8 text-center">
-          <div className="max-w-md rounded-2xl bg-zinc-900 border border-zinc-800 p-6 space-y-4">
-            <h2 className="text-base font-semibold text-zinc-100">
+        <div className="h-screen w-screen flex flex-col items-center justify-center bg-[#121010] text-stone-100 p-8 text-center select-none">
+          <div className="max-w-md rounded-3xl bg-[#1b1817] border border-white/[0.1] p-7 space-y-5 shadow-2xl">
+            <h2 className="text-base font-semibold text-stone-100">
               Something went wrong
             </h2>
-            <p className="text-xs font-mono text-zinc-400 break-words">
+            <p className="text-xs font-mono text-stone-400 break-words leading-relaxed">
               {this.state.message}
             </p>
             <Button
               variant="primary"
               size="md"
+              pill
               onClick={() => this.setState({ hasError: false, message: "" })}
             >
               Recover Workspace
@@ -209,7 +210,7 @@ export function AppContent() {
   const isLauncherVisible = openVaults.length === 0 || showNewTab;
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-zinc-950 text-zinc-100 overflow-hidden border border-white/[0.07]">
+    <div className="h-screen w-screen flex flex-col bg-[#121010] text-stone-100 overflow-hidden border border-white/[0.08]">
       {/* Custom Frameless Desktop Top Bar with Integrated Multi-Vault Tabs */}
       <TitleBar
         vaults={openVaults}

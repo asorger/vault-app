@@ -158,20 +158,41 @@ pub fn derive_master_key_with_salt16(
 
 /// Stream-encrypt a file in 4 MB chunks using ChaCha20Poly1305 with StreamBE32.
 ///
+/// Returns true if the file extension is known to already be compressed.
+/// Compressing these formats wastes CPU time on low-spec PCs with negligible or negative size gains.
+pub fn is_already_compressed_extension(ext: &str) -> bool {
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "mp4" | "mkv" | "avi" | "mov" | "webm" | "m4v"
+        | "zip" | "7z" | "rar" | "gz" | "bz2" | "xz" | "zst"
+        | "jpg" | "jpeg" | "png" | "webp" | "gif"
+        | "mp3" | "flac" | "ogg" | "m4a" | "aac"
+        | "pdf"
+    )
+}
+
 /// Prepares a plaintext chunk for encryption, transparently applying Zstandard (level 3)
 /// compression if `compress` is true and the compressed data is actually smaller.
+/// If `skip_zstd` is true (e.g., for pre-compressed file extensions), it skips `zstd::encode_all`
+/// and directly frames the payload with `0x00`.
 ///
 /// Framing:
 /// - If `compress` is true:
 ///   - If compressed size + 1 < raw size: `[0x01, ...zstd_data]`
 ///   - Otherwise: `[0x00, ...raw_data]`
 /// - If `compress` is false: raw chunk bytes without header (100% legacy compatible).
-pub fn prepare_chunk_payload(raw_chunk: &[u8], compress: bool) -> AppResult<Vec<u8>> {
+pub fn prepare_chunk_payload(raw_chunk: &[u8], compress: bool, skip_zstd: bool) -> AppResult<Vec<u8>> {
     if !compress {
         return Ok(raw_chunk.to_vec());
     }
     if raw_chunk.is_empty() {
         return Ok(vec![0u8]);
+    }
+    if skip_zstd {
+        let mut framed = Vec::with_capacity(raw_chunk.len() + 1);
+        framed.push(0u8);
+        framed.extend_from_slice(raw_chunk);
+        return Ok(framed);
     }
     match zstd::encode_all(raw_chunk, 3) {
         Ok(comp) if comp.len() + 1 < raw_chunk.len() => {
@@ -256,6 +277,12 @@ fn encrypt_file_stream_with_key(
     let mut src_file = std::fs::File::open(src_path)?;
     let mut dest_file = std::fs::File::create(dest_path)?;
 
+    let ext = src_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    let skip_zstd = compress && is_already_compressed_extension(ext);
+
     // We use a two-buffer strategy:
     // - `current` holds the chunk we're about to process
     // - We read ahead into `current` to know whether more data follows
@@ -264,7 +291,7 @@ fn encrypt_file_stream_with_key(
 
     // Handle empty file case
     if current_len == 0 {
-        let payload = prepare_chunk_payload(&[][..], compress)?;
+        let payload = prepare_chunk_payload(&[][..], compress, skip_zstd)?;
         let ciphertext = encryptor
             .encrypt_last(payload.as_slice())
             .map_err(|e| AppError::Crypto(format!("encrypt_last failed: {}", e)))?;
@@ -278,7 +305,7 @@ fn encrypt_file_stream_with_key(
         let mut next_buffer = vec![0u8; CHUNK_SIZE];
         let next_len = fill_buffer(&mut src_file, &mut next_buffer)?;
 
-        let payload = prepare_chunk_payload(&buffer[..current_len], compress)?;
+        let payload = prepare_chunk_payload(&buffer[..current_len], compress, skip_zstd)?;
         if next_len == 0 {
             // current is the last chunk
             let ciphertext = encryptor
@@ -502,6 +529,13 @@ pub fn encrypt_file_stream_to_db_with_progress(
     let mut encryptor = EncryptorBE32::from_aead(cipher, (&nonce).into());
 
     let mut src_file = std::fs::File::open(src_path)?;
+
+    let ext = src_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    let skip_zstd = compress && is_already_compressed_extension(ext);
+
     let mut buffer = vec![0u8; CHUNK_SIZE];
     let mut current_len = fill_buffer(&mut src_file, &mut buffer)?;
 
@@ -510,7 +544,7 @@ pub fn encrypt_file_stream_to_db_with_progress(
     )?;
 
     if current_len == 0 {
-        let payload = prepare_chunk_payload(&[][..], compress)?;
+        let payload = prepare_chunk_payload(&[][..], compress, skip_zstd)?;
         let ciphertext = encryptor
             .encrypt_last(payload.as_slice())
             .map_err(|e| AppError::Crypto(format!("encrypt_last failed: {}", e)))?;
@@ -523,7 +557,7 @@ pub fn encrypt_file_stream_to_db_with_progress(
         let mut next_buffer = vec![0u8; CHUNK_SIZE];
         let next_len = fill_buffer(&mut src_file, &mut next_buffer)?;
 
-        let payload = prepare_chunk_payload(&buffer[..current_len], compress)?;
+        let payload = prepare_chunk_payload(&buffer[..current_len], compress, skip_zstd)?;
         if next_len == 0 {
             let ciphertext = encryptor
                 .encrypt_last(payload.as_slice())

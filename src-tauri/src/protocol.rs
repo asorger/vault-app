@@ -288,7 +288,7 @@ pub fn handle_vault_request<R: tauri::Runtime>(
                 .header("Content-Range", content_range)
                 .header("Content-Length", data.len().to_string())
                 .header("Access-Control-Allow-Origin", "*")
-                .header("Cache-Control", "no-store")
+                .header("Cache-Control", "private, max-age=3600")
                 .body(data)
                 .unwrap_or_else(|_| Response::new(Vec::new()))
         }
@@ -298,7 +298,7 @@ pub fn handle_vault_request<R: tauri::Runtime>(
             .header("Accept-Ranges", "bytes")
             .header("Content-Length", data.len().to_string())
             .header("Access-Control-Allow-Origin", "*")
-            .header("Cache-Control", "no-store")
+            .header("Cache-Control", "private, max-age=3600")
             .body(data)
             .unwrap_or_else(|_| Response::new(Vec::new())),
         Ok(StreamOutcome::DecryptError(err_msg)) => error_response(

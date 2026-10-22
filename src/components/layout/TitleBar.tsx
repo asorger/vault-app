@@ -143,29 +143,29 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         onContextMenu={(e) => {
           e.preventDefault();
         }}
-        className="h-10 bg-[#09090d] border-b border-white/[0.06] flex items-center justify-between select-none shrink-0 z-40"
+        className="h-10 bg-[#141211] border-b border-white/[0.06] flex items-center justify-between select-none shrink-0 z-40"
       >
         {/* Left: App Brand + Integrated Vault Tabs */}
-        <div className="flex items-center h-full min-w-0 flex-1 pl-3 gap-2 overflow-hidden">
-          {/* Brand Mark */}
-          <div className="flex items-center gap-2 pr-2 shrink-0 pointer-events-none">
-            <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-indigo-500/25 to-indigo-600/10 border border-indigo-500/30 flex items-center justify-center shadow-inner">
-              <Shield className="w-3.5 h-3.5 text-indigo-400" />
+        <div className="flex items-center h-full min-w-0 flex-1 pl-3.5 gap-2.5 overflow-hidden">
+          {/* Brand Mark (Blip-inspired purple squircle) */}
+          <div className="flex items-center gap-2 pr-1 shrink-0 pointer-events-none">
+            <div className="w-5.5 h-5.5 rounded-lg bg-purple-600 flex items-center justify-center shadow-sm shadow-purple-900/40">
+              <Shield className="w-3.5 h-3.5 text-white" />
             </div>
-            <span className="text-xs font-semibold tracking-wide text-zinc-200">
+            <span className="text-xs font-semibold tracking-wide text-stone-200">
               Vault
             </span>
           </div>
 
           {vaults.length > 0 && (
-            <div className="h-4 w-[1px] bg-white/[0.07] shrink-0 mr-1" />
+            <div className="h-3.5 w-[1px] bg-white/[0.08] shrink-0 mx-0.5" />
           )}
 
           {/* Integrated Multi-Vault Tabs */}
           {vaults.length > 0 && (
             <div
               data-no-drag
-              className="flex items-center gap-1 overflow-x-auto scrollbar-none py-1 min-w-0"
+              className="flex items-center gap-1.5 overflow-x-auto scrollbar-none py-1 min-w-0"
             >
               {vaults.map((vault) => {
                 const isActive = activeTabId === vault.id;
@@ -189,15 +189,15 @@ export const TitleBar: React.FC<TitleBarProps> = ({
                         vault,
                       });
                     }}
-                    className={`group flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer max-w-[210px] shrink-0 border ${
+                    className={`group flex items-center gap-2 px-3 py-1 rounded-xl text-xs font-medium transition-all cursor-pointer max-w-[210px] shrink-0 border ${
                       isActive
-                        ? "bg-[#16161d] border-white/[0.1] text-zinc-100 shadow-sm"
-                        : "bg-transparent border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04]"
+                        ? "bg-[#201c1a] border-white/[0.12] text-stone-100 shadow-sm"
+                        : "bg-transparent border-transparent text-stone-400 hover:text-stone-200 hover:bg-white/[0.04]"
                     }`}
                   >
                     <FolderLock
                       className={`w-3.5 h-3.5 shrink-0 ${
-                        isActive ? "text-indigo-400" : "text-zinc-500"
+                        isActive ? "text-purple-400" : "text-stone-500"
                       }`}
                     />
                     <span className="truncate">{vault.name}</span>
@@ -207,7 +207,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
                         e.stopPropagation();
                         onCloseTab(vault.id);
                       }}
-                      className="p-0.5 rounded-md hover:bg-white/[0.1] text-zinc-500 hover:text-zinc-200 transition-colors cursor-pointer ml-0.5"
+                      className="p-0.5 rounded-md hover:bg-white/[0.1] text-stone-400 hover:text-stone-200 transition-colors cursor-pointer ml-0.5"
                       title="Close Vault Tab"
                     >
                       <X className="w-3 h-3" />
@@ -219,10 +219,10 @@ export const TitleBar: React.FC<TitleBarProps> = ({
               {showNewTab && (
                 <div
                   onClick={() => onSelectTab("new-tab")}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer shrink-0 border ${
+                  className={`flex items-center gap-2 px-3 py-1 rounded-xl text-xs font-medium transition-all cursor-pointer shrink-0 border ${
                     activeTabId === "new-tab"
-                      ? "bg-[#16161d] border-white/[0.1] text-zinc-100 shadow-sm"
-                      : "bg-transparent border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04]"
+                      ? "bg-[#201c1a] border-white/[0.12] text-stone-100 shadow-sm"
+                      : "bg-transparent border-transparent text-stone-400 hover:text-stone-200 hover:bg-white/[0.04]"
                   }`}
                 >
                   <span>Open Vault</span>
@@ -232,7 +232,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
                       e.stopPropagation();
                       onCloseNewTab();
                     }}
-                    className="p-0.5 rounded-md hover:bg-white/[0.1] text-zinc-500 hover:text-zinc-200 transition-colors cursor-pointer"
+                    className="p-0.5 rounded-md hover:bg-white/[0.1] text-stone-400 hover:text-stone-200 transition-colors cursor-pointer"
                   >
                     <X className="w-3 h-3" />
                   </button>
@@ -242,7 +242,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
               <button
                 type="button"
                 onClick={onOpenNewTab}
-                className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.06] transition-colors cursor-pointer shrink-0"
+                className="p-1 rounded-lg text-stone-400 hover:text-stone-100 hover:bg-white/[0.06] transition-colors cursor-pointer shrink-0"
                 title="Open or create another vault"
               >
                 <Plus className="w-3.5 h-3.5" />
@@ -257,7 +257,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
             type="button"
             onClick={handleMinimize}
             title="Minimize"
-            className="w-11 h-full flex items-center justify-center text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.06] transition-colors cursor-pointer"
+            className="w-11 h-full flex items-center justify-center text-stone-400 hover:text-stone-100 hover:bg-white/[0.06] transition-colors cursor-pointer"
           >
             <Minus className="w-3.5 h-3.5" />
           </button>
@@ -265,7 +265,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
             type="button"
             onClick={handleToggleMaximize}
             title={isMaximized ? "Restore Down" : "Maximize"}
-            className="w-11 h-full flex items-center justify-center text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.06] transition-colors cursor-pointer"
+            className="w-11 h-full flex items-center justify-center text-stone-400 hover:text-stone-100 hover:bg-white/[0.06] transition-colors cursor-pointer"
           >
             {isMaximized ? (
               <Copy className="w-3.5 h-3.5 rotate-180" />
@@ -277,7 +277,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
             type="button"
             onClick={handleCloseWindow}
             title="Close"
-            className="w-11 h-full flex items-center justify-center text-zinc-400 hover:bg-[#e81123] hover:text-white transition-colors cursor-pointer"
+            className="w-11 h-full flex items-center justify-center text-stone-400 hover:bg-[#e11d48] hover:text-white transition-colors cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
@@ -296,13 +296,13 @@ export const TitleBar: React.FC<TitleBarProps> = ({
             e.preventDefault();
             e.stopPropagation();
           }}
-          className="fixed z-50 w-52 rounded-xl bg-zinc-900/95 backdrop-blur-md border border-zinc-800 shadow-2xl py-1.5 text-xs text-zinc-200 select-none"
+          className="fixed z-50 w-52 rounded-2xl bg-[#1a1716]/95 backdrop-blur-md border border-white/[0.1] shadow-2xl py-1.5 text-xs text-stone-200 select-none"
         >
-          <div className="px-3 py-1.5 border-b border-zinc-800/80 mb-1">
-            <p className="font-semibold text-zinc-200 truncate">
+          <div className="px-3 py-1.5 border-b border-white/[0.07] mb-1">
+            <p className="font-semibold text-stone-200 truncate">
               {tabMenu.vault.name}
             </p>
-            <p className="text-[11px] font-mono text-zinc-500 truncate">
+            <p className="text-[11px] font-mono text-stone-400 truncate">
               {tabMenu.vault.vault_path}
             </p>
           </div>
@@ -317,12 +317,12 @@ export const TitleBar: React.FC<TitleBarProps> = ({
               }
               setTabMenu((prev) => ({ ...prev, visible: false }));
             }}
-            className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-zinc-800 transition-colors text-left"
+            className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-white/[0.06] transition-colors text-left"
           >
             {copiedId === tabMenu.vault.id ? (
               <CopyCheck className="w-3.5 h-3.5 text-emerald-400" />
             ) : (
-              <Copy className="w-3.5 h-3.5 text-zinc-400" />
+              <Copy className="w-3.5 h-3.5 text-stone-400" />
             )}
             <span>Copy Vault File Path</span>
           </button>
@@ -336,14 +336,14 @@ export const TitleBar: React.FC<TitleBarProps> = ({
                 }
                 setTabMenu((prev) => ({ ...prev, visible: false }));
               }}
-              className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-zinc-800 transition-colors text-left"
+              className="w-full px-3 py-2 flex items-center gap-2.5 hover:bg-white/[0.06] transition-colors text-left"
             >
-              <X className="w-3.5 h-3.5 text-zinc-400" />
+              <X className="w-3.5 h-3.5 text-stone-400" />
               <span>Close Other Vault Tabs</span>
             </button>
           )}
 
-          <div className="my-1 border-t border-zinc-800/80" />
+          <div className="my-1 border-t border-white/[0.07]" />
 
           <button
             type="button"
@@ -353,7 +353,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
               }
               setTabMenu((prev) => ({ ...prev, visible: false }));
             }}
-            className="w-full px-3 py-2 flex items-center gap-2.5 text-red-400 hover:bg-red-950/50 hover:text-red-300 transition-colors text-left"
+            className="w-full px-3 py-2 flex items-center gap-2.5 text-rose-400 hover:bg-rose-950/40 hover:text-rose-300 transition-colors text-left"
           >
             <Lock className="w-3.5 h-3.5" />
             <span>Close Vault</span>
@@ -363,4 +363,3 @@ export const TitleBar: React.FC<TitleBarProps> = ({
     </>
   );
 };
-

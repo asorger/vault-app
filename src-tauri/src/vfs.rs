@@ -9,6 +9,7 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+use chacha20poly1305::KeyInit;
 use rand::RngCore;
 use rusqlite::Connection;
 use zeroize::Zeroizing;
@@ -42,6 +43,54 @@ impl VaultHandle {
     }
 }
 
+/// Set the Windows `FILE_ATTRIBUTE_HIDDEN` flag on a file or folder.
+pub fn set_hidden_attribute(path: &Path) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileAttributesW, SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN, INVALID_FILE_ATTRIBUTES,
+        };
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        unsafe {
+            let attrs = GetFileAttributesW(wide.as_ptr());
+            if attrs != INVALID_FILE_ATTRIBUTES {
+                let _ = SetFileAttributesW(wide.as_ptr(), attrs | FILE_ATTRIBUTE_HIDDEN);
+            } else {
+                let _ = SetFileAttributesW(wide.as_ptr(), FILE_ATTRIBUTE_HIDDEN);
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = path;
+    }
+}
+
+/// Hide companion SQLite WAL and SHM files on Windows by setting `FILE_ATTRIBUTE_HIDDEN`.
+pub fn hide_wal_shm_files(db_path: &Path) {
+    let wal = PathBuf::from(format!("{}-wal", db_path.to_string_lossy()));
+    let shm = PathBuf::from(format!("{}-shm", db_path.to_string_lossy()));
+    if wal.exists() {
+        set_hidden_attribute(&wal);
+    }
+    if shm.exists() {
+        set_hidden_attribute(&shm);
+    }
+}
+
+/// Cleanly remove companion SQLite WAL and SHM files after checkpointing on lock.
+pub fn cleanup_wal_shm_files(db_path: &Path) {
+    let wal = PathBuf::from(format!("{}-wal", db_path.to_string_lossy()));
+    let shm = PathBuf::from(format!("{}-shm", db_path.to_string_lossy()));
+    let _ = std::fs::remove_file(wal);
+    let _ = std::fs::remove_file(shm);
+}
+
 /// Create a new single-file `.vault` archive at `vault_file_path`.
 ///
 /// The entire vault — Argon2id salt header (`0..16`), encrypted metadata tables, and
@@ -52,6 +101,8 @@ pub fn create_single_file_vault(vault_file_path: &Path, password: &str) -> AppRe
 
     let master_key = crypto::derive_master_key_with_salt16(password, &salt16)?;
     let conn = db::create_single_file_db(vault_file_path, &master_key, &salt16)?;
+
+    hide_wal_shm_files(vault_file_path);
 
     Ok(VaultHandle {
         vault_path: vault_file_path.to_path_buf(),
@@ -79,6 +130,8 @@ pub fn open_single_file_vault(vault_file_path: &Path, password: &str) -> AppResu
 
     let master_key = crypto::derive_master_key_with_salt16(password, &salt16)?;
     let conn = db::open_single_file_db(vault_file_path, &master_key, &salt16)?;
+
+    hide_wal_shm_files(vault_file_path);
 
     Ok(VaultHandle {
         vault_path: vault_file_path.to_path_buf(),
@@ -140,6 +193,19 @@ pub fn open_vault(vault_path: &Path, password: &str) -> AppResult<VaultHandle> {
 
     // Open database (this verifies the key)
     let conn = db::open_db(&db_path, &master_key)?;
+
+    // Automatically clean up any stale *.dat.tmp files from interrupted sessions
+    let blobs_dir = vault_path.join("blobs");
+    if blobs_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&blobs_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_file() && p.extension().map_or(false, |ext| ext == "tmp") {
+                    let _ = std::fs::remove_file(&p);
+                }
+            }
+        }
+    }
 
     Ok(VaultHandle {
         vault_path: vault_path.to_path_buf(),
@@ -306,6 +372,14 @@ pub fn ingest_file_resilient(
 
     let mut bytes_emitted_for_file = 0u64;
 
+    let (final_blob_path, temp_blob_path) = if !handle.is_single_file() {
+        let final_path = handle.blob_path(&blob_id);
+        let temp_path = handle.vault_path.join("blobs").join(format!("{}.dat.tmp", blob_id));
+        (Some(final_path), Some(temp_path))
+    } else {
+        (None, None)
+    };
+
     let encrypt_result = if handle.is_single_file() {
         crypto::encrypt_file_stream_to_db_with_progress(
             file_path,
@@ -318,21 +392,42 @@ pub fn ingest_file_resilient(
             },
         )
     } else {
-        let blob_path = handle.blob_path(&blob_id);
-        crypto::encrypt_file_stream_with_progress(file_path, &blob_path, compress, &mut |chunk_bytes| {
+        let temp_path = temp_blob_path.as_ref().unwrap();
+        crypto::encrypt_file_stream_with_progress(file_path, temp_path, compress, &mut |chunk_bytes| {
             bytes_emitted_for_file = bytes_emitted_for_file.saturating_add(chunk_bytes);
             on_progress(chunk_bytes, 0, original_name);
         })
     };
 
     let (file_key, file_nonce) = match encrypt_result {
-        Ok(pair) => pair,
+        Ok(pair) => {
+            // Atomically rename .tmp to final .dat for directory vaults before committing metadata
+            if let (Some(ref temp), Some(ref final_p)) = (&temp_blob_path, &final_blob_path) {
+                if let Err(e) = std::fs::rename(temp, final_p) {
+                    let _ = std::fs::remove_file(temp);
+                    let _ = handle.conn.execute_batch(
+                        "ROLLBACK TO SAVEPOINT sp_ingest_file; RELEASE SAVEPOINT sp_ingest_file;",
+                    );
+                    let remaining_bytes = expected_size.saturating_sub(bytes_emitted_for_file);
+                    on_progress(remaining_bytes, 1, original_name);
+                    report.skipped_files.push(SkippedFile {
+                        name: original_name.to_string(),
+                        reason: humanize_skip_reason(&AppError::Io(e)),
+                    });
+                    return Ok(());
+                }
+            }
+            pair
+        }
         Err(err) => {
             let _ = handle.conn.execute_batch(
                 "ROLLBACK TO SAVEPOINT sp_ingest_file; RELEASE SAVEPOINT sp_ingest_file;",
             );
-            if !handle.is_single_file() {
-                let _ = std::fs::remove_file(handle.blob_path(&blob_id));
+            if let Some(ref temp) = temp_blob_path {
+                let _ = std::fs::remove_file(temp);
+            }
+            if let Some(ref final_p) = final_blob_path {
+                let _ = std::fs::remove_file(final_p);
             }
             let remaining_bytes = expected_size.saturating_sub(bytes_emitted_for_file);
             on_progress(remaining_bytes, 1, original_name);
@@ -742,9 +837,6 @@ fn export_folder_contents(
 }
 
 /// Delete an item (file or folder) from the vault.
-///
-/// For files: deletes encrypted chunks (or zero-overwrites the blob `.dat` file in legacy mode) and deletes the DB record.
-/// For folders: recursively deletes all children first, then removes the folder record.
 pub fn delete_item(handle: &VaultHandle, item_id: &str) -> AppResult<()> {
     delete_item_with_progress(handle, item_id, &mut |_, _, _| {})
 }
@@ -756,110 +848,493 @@ pub fn delete_item_with_progress(
     item_id: &str,
     on_progress: &mut dyn FnMut(u64, usize, &str),
 ) -> AppResult<()> {
-    // Check if it's a file
-    let file_info: Option<(String, String, i64)> = handle
-        .conn
-        .prepare("SELECT blob_id, original_name, size_bytes FROM files WHERE id = ?1")
-        .and_then(|mut stmt| {
-            stmt.query_row(rusqlite::params![item_id], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })
-        })
-        .ok();
-
-    if let Some((blob_id, original_name, size_bytes)) = file_info {
-        if handle.is_single_file() {
-            handle.conn.execute(
-                "DELETE FROM blob_chunks WHERE blob_id = ?1",
-                rusqlite::params![blob_id],
-            )?;
-        } else {
-            let blob_path = handle.blob_path(&blob_id);
-            if blob_path.exists() {
-                std::fs::remove_file(&blob_path)?;
-            }
-        }
-        handle
-            .conn
-            .execute("DELETE FROM files WHERE id = ?1", rusqlite::params![item_id])?;
-        on_progress(size_bytes.max(0) as u64, 1, &original_name);
-        return Ok(());
-    }
-
-    // Check if it's a folder
-    let is_folder: bool = handle
-        .conn
-        .prepare("SELECT count(*) FROM folders WHERE id = ?1")
-        .and_then(|mut stmt| stmt.query_row(rusqlite::params![item_id], |row| row.get::<_, i64>(0)))
-        .map(|c| c > 0)
-        .unwrap_or(false);
-
-    if is_folder {
-        delete_folder_recursive(handle, item_id, on_progress)?;
-        return Ok(());
-    }
-
-    Err(AppError::NotFound(format!("item '{}'", item_id)))
+    delete_items_batch(handle, &[item_id.to_string()], on_progress)
 }
 
-/// Recursively delete a folder and all its contents in an optimized, set-based manner.
-fn delete_folder_recursive(
-    handle: &VaultHandle,
-    folder_id: &str,
-    on_progress: &mut dyn FnMut(u64, usize, &str),
-) -> AppResult<()> {
-    // Collect all descendant files using a single recursive query
-    let mut stmt = handle.conn.prepare(
-        "WITH RECURSIVE subfolders(id) AS (
-            SELECT ?1
-            UNION ALL
-            SELECT f.id FROM folders f JOIN subfolders s ON f.parent_id = s.id
-        )
-        SELECT f.id, f.blob_id, f.original_name, f.size_bytes
-        FROM files f
-        WHERE f.folder_id IN (SELECT id FROM subfolders)",
-    )?;
-    let files: Vec<(String, String, String, i64)> = stmt
-        .query_map(rusqlite::params![folder_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
-            ))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+/// File metadata gathered for batch deletion.
+#[derive(Debug, Clone)]
+pub struct TargetFileInfo {
+    pub id: String,
+    pub blob_id: String,
+    pub original_name: String,
+    pub size_bytes: i64,
+}
 
-    // Delete chunks and files
-    for (file_id, blob_id, original_name, size_bytes) in files {
-        if handle.is_single_file() {
-            handle.conn.execute(
-                "DELETE FROM blob_chunks WHERE blob_id = ?1",
-                rusqlite::params![blob_id],
-            )?;
-        } else {
-            let blob_path = handle.blob_path(&blob_id);
-            if blob_path.exists() {
-                let _ = std::fs::remove_file(&blob_path);
-            }
-        }
-        handle
-            .conn
-            .execute("DELETE FROM files WHERE id = ?1", rusqlite::params![file_id])?;
-        on_progress(size_bytes.max(0) as u64, 1, &original_name);
+/// Comprehensive deletion plan containing all files and folders to be removed.
+#[derive(Debug, Clone)]
+pub struct DeletionPlan {
+    pub files: Vec<TargetFileInfo>,
+    pub folders: Vec<String>,
+    pub total_bytes: u64,
+}
+
+/// In ONE fast indexed query (<2ms), recursively resolve all target files and folders
+/// specified by `item_ids`, returning the exact list of items, sizes, and blob IDs.
+pub fn gather_deletion_plan(
+    conn: &rusqlite::Connection,
+    item_ids: &[String],
+) -> AppResult<DeletionPlan> {
+    if item_ids.is_empty() {
+        return Ok(DeletionPlan {
+            files: Vec::new(),
+            folders: Vec::new(),
+            total_bytes: 0,
+        });
     }
 
-    // Delete all descendant folders including folder_id itself in one statement
-    handle.conn.execute(
-        "WITH RECURSIVE subfolders(id) AS (
-            SELECT ?1
-            UNION ALL
-            SELECT f.id FROM folders f JOIN subfolders s ON f.parent_id = s.id
-        )
-        DELETE FROM folders WHERE id IN (SELECT id FROM subfolders)",
-        rusqlite::params![folder_id],
+    conn.execute_batch(
+        "
+        CREATE TEMP TABLE IF NOT EXISTS _del_seed (id TEXT PRIMARY KEY);
+        DELETE FROM _del_seed;
+        ",
     )?;
 
+    {
+        let mut insert_stmt =
+            conn.prepare("INSERT OR IGNORE INTO _del_seed (id) VALUES (?1)")?;
+        for id in item_ids {
+            insert_stmt.execute(rusqlite::params![id])?;
+        }
+    }
+
+    // 1. Gather all target folders (selected folders and all their recursive subfolders, deepest first)
+    let mut folder_stmt = conn.prepare(
+        "
+        WITH RECURSIVE target_folders(id, depth) AS (
+            SELECT f.id, 0 FROM folders f JOIN _del_seed s ON f.id = s.id
+            UNION ALL
+            SELECT f.id, tf.depth + 1 FROM folders f JOIN target_folders tf ON f.parent_id = tf.id
+        )
+        SELECT id, MAX(depth) AS max_depth
+        FROM target_folders
+        GROUP BY id
+        ORDER BY max_depth DESC;
+        ",
+    )?;
+
+    let target_folders: Vec<String> = folder_stmt
+        .query_map([], |row| row.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    // 2. Gather all target files (directly selected files or contained in target folders)
+    let mut file_stmt = conn.prepare(
+        "
+        WITH RECURSIVE target_folders(id) AS (
+            SELECT f.id FROM folders f JOIN _del_seed s ON f.id = s.id
+            UNION ALL
+            SELECT f.id FROM folders f JOIN target_folders tf ON f.parent_id = tf.id
+        )
+        SELECT DISTINCT f.id, f.blob_id, f.original_name, f.size_bytes
+        FROM files f
+        WHERE f.id IN (SELECT id FROM _del_seed)
+           OR f.folder_id IN (SELECT id FROM target_folders);
+        ",
+    )?;
+
+    let mut total_bytes = 0u64;
+    let target_files: Vec<TargetFileInfo> = file_stmt
+        .query_map([], |row| {
+            let size: i64 = row.get(3)?;
+            Ok(TargetFileInfo {
+                id: row.get(0)?,
+                blob_id: row.get(1)?,
+                original_name: row.get(2)?,
+                size_bytes: size,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .map(|f| {
+            total_bytes = total_bytes.saturating_add(f.size_bytes.max(0) as u64);
+            f
+        })
+        .collect();
+
+    let _ = conn.execute_batch("DROP TABLE IF EXISTS _del_seed;");
+
+    Ok(DeletionPlan {
+        files: target_files,
+        folders: target_folders,
+        total_bytes,
+    })
+}
+
+/// Delete a chunk of files from SQLite (and unlink `.dat` from disk in directory mode).
+pub fn delete_files_chunk(handle: &VaultHandle, chunk: &[TargetFileInfo]) -> AppResult<()> {
+    if chunk.is_empty() {
+        return Ok(());
+    }
+
+    let is_single = handle.is_single_file();
+    let blobs_dir = handle.blobs_dir();
+
+    handle.conn.execute_batch("BEGIN IMMEDIATE; PRAGMA defer_foreign_keys = ON;")?;
+    let res = (|| -> AppResult<()> {
+        let mut del_chunk_stmt = if is_single {
+            Some(handle.conn.prepare("DELETE FROM blob_chunks WHERE blob_id = ?1")?)
+        } else {
+            None
+        };
+        let mut del_file_stmt = handle.conn.prepare("DELETE FROM files WHERE id = ?1")?;
+
+        for f in chunk {
+            if let Some(ref mut stmt) = del_chunk_stmt {
+                stmt.execute(rusqlite::params![f.blob_id])?;
+            }
+            del_file_stmt.execute(rusqlite::params![f.id])?;
+        }
+        Ok(())
+    })();
+
+    match res {
+        Ok(_) => {
+            handle.conn.execute_batch("COMMIT;")?;
+        }
+        Err(e) => {
+            let _ = handle.conn.execute_batch("ROLLBACK;");
+            return Err(e);
+        }
+    }
+
+    // For directory vaults: directly unlink the ciphertext .dat files
+    if !is_single {
+        for f in chunk {
+            let p = blobs_dir.join(format!("{}.dat", f.blob_id));
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    Ok(())
+}
+
+/// Delete a list of folders from SQLite.
+pub fn delete_folders_list(handle: &VaultHandle, folder_ids: &[String]) -> AppResult<()> {
+    if folder_ids.is_empty() {
+        return Ok(());
+    }
+
+    handle.conn.execute_batch("BEGIN IMMEDIATE; PRAGMA defer_foreign_keys = ON;")?;
+    let res = (|| -> AppResult<()> {
+        let mut del_stmt = handle.conn.prepare("DELETE FROM folders WHERE id = ?1")?;
+        for fid in folder_ids {
+            del_stmt.execute(rusqlite::params![fid])?;
+        }
+        Ok(())
+    })();
+
+    match res {
+        Ok(_) => {
+            handle.conn.execute_batch("COMMIT;")?;
+        }
+        Err(e) => {
+            let _ = handle.conn.execute_batch("ROLLBACK;");
+            return Err(e);
+        }
+    }
+
+    Ok(())
+}
+
+/// Atomically delete a batch of files and folders (and all their recursive descendants)
+/// with real-time progress callbacks.
+pub fn delete_items_batch(
+    handle: &VaultHandle,
+    item_ids: &[String],
+    on_progress: &mut dyn FnMut(u64, usize, &str),
+) -> AppResult<()> {
+    let plan = gather_deletion_plan(&handle.conn, item_ids)?;
+
+    for chunk in plan.files.chunks(10) {
+        delete_files_chunk(handle, chunk)?;
+        for f in chunk {
+            on_progress(f.size_bytes.max(0) as u64, 1, &f.original_name);
+        }
+    }
+
+    delete_folders_list(handle, &plan.folders)?;
+    on_progress(0, plan.folders.len(), "Folders removed");
+
+    Ok(())
+}
+
+/// Retroactively compress or decompress all files in the vault to match `target_compressed`.
+///
+/// Uses crash-safe atomic blob swapping:
+/// - Directory mode: stream-encrypts to `<blob_id>.dat.tmp`, syncs, renames to `<blob_id>.dat`,
+///   updates metadata inside a SQLite transaction, and deletes the old blob.
+/// - Single-file mode: stream-encrypts new chunks under a new temporary `blob_id`, updates metadata
+///   and deletes old chunks within an atomic transaction.
+/// If power or process is killed mid-migration, the database and existing blobs remain 100% intact.
+pub fn reprocess_vault_compression(
+    handle: &VaultHandle,
+    target_compressed: bool,
+    on_progress: &mut dyn FnMut(usize, usize, u64, u64, &str),
+) -> AppResult<()> {
+    let target_flag = if target_compressed { 1i64 } else { 0i64 };
+
+    struct FileMigrationRow {
+        id: String,
+        blob_id: String,
+        original_name: String,
+        size_bytes: i64,
+        key_bytes: zeroize::Zeroizing<Vec<u8>>,
+        nonce_bytes: Vec<u8>,
+        current_compressed: bool,
+    }
+
+    let files_to_migrate: Vec<FileMigrationRow> = {
+        let mut stmt = handle.conn.prepare(
+            "SELECT id, blob_id, original_name, size_bytes, file_key, file_nonce, COALESCE(compressed, 0)
+             FROM files
+             WHERE COALESCE(compressed, 0) != ?1",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![target_flag], |row| {
+            Ok(FileMigrationRow {
+                id: row.get(0)?,
+                blob_id: row.get(1)?,
+                original_name: row.get(2)?,
+                size_bytes: row.get(3)?,
+                key_bytes: zeroize::Zeroizing::new(row.get::<_, Vec<u8>>(4)?),
+                nonce_bytes: row.get(5)?,
+                current_compressed: row.get::<_, i64>(6)? != 0,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+
+    let total_files = files_to_migrate.len();
+    let total_bytes: u64 = files_to_migrate
+        .iter()
+        .map(|f| f.size_bytes.max(0) as u64)
+        .sum();
+
+    if total_files == 0 {
+        db::set_vault_compression_setting(&handle.conn, target_compressed)?;
+        on_progress(0, 0, 0, 0, "All files already up to date");
+        return Ok(());
+    }
+
+    let mut completed_files = 0usize;
+    let mut completed_bytes = 0u64;
+
+    for file in &files_to_migrate {
+        let file_key: zeroize::Zeroizing<[u8; 32]> = file
+            .key_bytes
+            .as_slice()
+            .try_into()
+            .map(zeroize::Zeroizing::new)
+            .map_err(|_| AppError::Crypto("Invalid file key in database".into()))?;
+
+        let file_nonce: [u8; 7] = file
+            .nonce_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| AppError::Crypto("Invalid file nonce in database".into()))?;
+
+        let file_size = file.size_bytes.max(0) as u64;
+        let new_blob_id = uuid::Uuid::new_v4().to_string();
+
+        let ext = Path::new(&file.original_name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        let skip_zstd = target_compressed && crypto::is_already_compressed_extension(ext);
+
+        if handle.is_single_file() {
+            let mut pt_data: Vec<u8> = Vec::new();
+            if file_size > 0 {
+                pt_data = crypto::decrypt_file_range_from_db(
+                    &handle.conn,
+                    &file.blob_id,
+                    &file_key,
+                    &file_nonce,
+                    file_size,
+                    file.current_compressed,
+                    0,
+                    file_size - 1,
+                )?;
+            }
+
+            let (new_key, new_nonce) = {
+                let mut fresh_key = zeroize::Zeroizing::new([0u8; 32]);
+                rand::thread_rng().fill_bytes(fresh_key.as_mut());
+                let mut fresh_nonce = [0u8; 7];
+                rand::thread_rng().fill_bytes(&mut fresh_nonce);
+
+                let cipher = chacha20poly1305::ChaCha20Poly1305::new((&*fresh_key).into());
+                let mut encryptor = chacha20poly1305::aead::stream::EncryptorBE32::from_aead(
+                    cipher,
+                    (&fresh_nonce).into(),
+                );
+
+                let mut insert_stmt = handle.conn.prepare(
+                    "INSERT INTO blob_chunks (blob_id, chunk_index, data) VALUES (?1, ?2, ?3)",
+                )?;
+
+                if pt_data.is_empty() {
+                    let payload = crypto::prepare_chunk_payload(&[][..], target_compressed, skip_zstd)?;
+                    let ct = encryptor
+                        .encrypt_last(payload.as_slice())
+                        .map_err(|e| AppError::Crypto(format!("re-encrypt failed: {}", e)))?;
+                    insert_stmt.execute(rusqlite::params![new_blob_id, 0i64, ct])?;
+                } else {
+                    let chunks: Vec<&[u8]> = pt_data.chunks(crypto::CHUNK_SIZE).collect();
+                    for (i, chunk) in chunks[..chunks.len() - 1].iter().enumerate() {
+                        let payload = crypto::prepare_chunk_payload(chunk, target_compressed, skip_zstd)?;
+                        let ct = encryptor
+                            .encrypt_next(payload.as_slice())
+                            .map_err(|e| AppError::Crypto(format!("re-encrypt failed: {}", e)))?;
+                        insert_stmt.execute(rusqlite::params![new_blob_id, i as i64, ct])?;
+                    }
+                    let last_chunk = chunks.last().unwrap();
+                    let payload = crypto::prepare_chunk_payload(last_chunk, target_compressed, skip_zstd)?;
+                    let ct = encryptor
+                        .encrypt_last(payload.as_slice())
+                        .map_err(|e| AppError::Crypto(format!("re-encrypt failed: {}", e)))?;
+                    insert_stmt.execute(rusqlite::params![new_blob_id, (chunks.len() - 1) as i64, ct])?;
+                }
+
+                (fresh_key, fresh_nonce)
+            };
+
+            handle.conn.execute_batch("BEGIN IMMEDIATE; PRAGMA defer_foreign_keys = ON;")?;
+            let tx_res = (|| -> AppResult<()> {
+                handle.conn.execute(
+                    "UPDATE files
+                     SET blob_id = ?1, file_key = ?2, file_nonce = ?3, compressed = ?4
+                     WHERE id = ?5",
+                    rusqlite::params![
+                        new_blob_id,
+                        new_key.as_ref() as &[u8],
+                        &new_nonce[..],
+                        target_flag,
+                        file.id,
+                    ],
+                )?;
+                handle.conn.execute(
+                    "DELETE FROM blob_chunks WHERE blob_id = ?1",
+                    rusqlite::params![file.blob_id],
+                )?;
+                Ok(())
+            })();
+
+            match tx_res {
+                Ok(_) => {
+                    handle.conn.execute_batch("COMMIT;")?;
+                }
+                Err(e) => {
+                    let _ = handle.conn.execute_batch("ROLLBACK;");
+                    let _ = handle.conn.execute(
+                        "DELETE FROM blob_chunks WHERE blob_id = ?1",
+                        rusqlite::params![new_blob_id],
+                    );
+                    return Err(e);
+                }
+            }
+        } else {
+            let old_blob_path = handle.blob_path(&file.blob_id);
+            let new_temp_path = handle
+                .vault_path
+                .join("blobs")
+                .join(format!("{}.dat.tmp", new_blob_id));
+            let new_final_path = handle.blob_path(&new_blob_id);
+
+            let mut pt_data: Vec<u8> = Vec::new();
+            if file_size > 0 && old_blob_path.is_file() {
+                pt_data = crypto::decrypt_file_range(
+                    &old_blob_path,
+                    &file_key,
+                    &file_nonce,
+                    file_size,
+                    file.current_compressed,
+                    0,
+                    file_size - 1,
+                )?;
+            }
+
+            let (new_key, new_nonce) = {
+                let mut fresh_key = zeroize::Zeroizing::new([0u8; 32]);
+                rand::thread_rng().fill_bytes(fresh_key.as_mut());
+                let mut fresh_nonce = [0u8; 7];
+                rand::thread_rng().fill_bytes(&mut fresh_nonce);
+
+                let cipher = chacha20poly1305::ChaCha20Poly1305::new((&*fresh_key).into());
+                let mut encryptor = chacha20poly1305::aead::stream::EncryptorBE32::from_aead(
+                    cipher,
+                    (&fresh_nonce).into(),
+                );
+
+                let mut out_file = std::fs::File::create(&new_temp_path)?;
+                if pt_data.is_empty() {
+                    let payload = crypto::prepare_chunk_payload(&[][..], target_compressed, skip_zstd)?;
+                    let ct = encryptor
+                        .encrypt_last(payload.as_slice())
+                        .map_err(|e| AppError::Crypto(format!("re-encrypt failed: {}", e)))?;
+                    out_file.write_all(&ct)?;
+                } else {
+                    let chunks: Vec<&[u8]> = pt_data.chunks(crypto::CHUNK_SIZE).collect();
+                    for chunk in &chunks[..chunks.len() - 1] {
+                        let payload = crypto::prepare_chunk_payload(chunk, target_compressed, skip_zstd)?;
+                        let ct = encryptor
+                            .encrypt_next(payload.as_slice())
+                            .map_err(|e| AppError::Crypto(format!("re-encrypt failed: {}", e)))?;
+                        out_file.write_all(&ct)?;
+                    }
+                    let last_chunk = chunks.last().unwrap();
+                    let payload = crypto::prepare_chunk_payload(last_chunk, target_compressed, skip_zstd)?;
+                    let ct = encryptor
+                        .encrypt_last(payload.as_slice())
+                        .map_err(|e| AppError::Crypto(format!("re-encrypt failed: {}", e)))?;
+                    out_file.write_all(&ct)?;
+                }
+                out_file.sync_all()?;
+                (fresh_key, fresh_nonce)
+            };
+
+            if let Err(e) = std::fs::rename(&new_temp_path, &new_final_path) {
+                let _ = std::fs::remove_file(&new_temp_path);
+                return Err(AppError::Io(e));
+            }
+
+            handle.conn.execute_batch("BEGIN IMMEDIATE; PRAGMA defer_foreign_keys = ON;")?;
+            let tx_res = handle.conn.execute(
+                "UPDATE files
+                 SET blob_id = ?1, file_key = ?2, file_nonce = ?3, compressed = ?4
+                 WHERE id = ?5",
+                rusqlite::params![
+                    new_blob_id,
+                    new_key.as_ref() as &[u8],
+                    &new_nonce[..],
+                    target_flag,
+                    file.id,
+                ],
+            );
+
+            match tx_res {
+                Ok(_) => {
+                    handle.conn.execute_batch("COMMIT;")?;
+                    let _ = std::fs::remove_file(&old_blob_path);
+                }
+                Err(e) => {
+                    let _ = handle.conn.execute_batch("ROLLBACK;");
+                    let _ = std::fs::remove_file(&new_final_path);
+                    return Err(AppError::Database(e));
+                }
+            }
+        }
+
+        completed_files += 1;
+        completed_bytes = completed_bytes.saturating_add(file_size);
+        on_progress(
+            completed_files,
+            total_files,
+            completed_bytes,
+            total_bytes,
+            &file.original_name,
+        );
+    }
+
+    db::set_vault_compression_setting(&handle.conn, target_compressed)?;
     Ok(())
 }
 

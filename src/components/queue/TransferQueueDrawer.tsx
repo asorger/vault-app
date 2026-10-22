@@ -1,3 +1,5 @@
+// src/components/queue/TransferQueueDrawer.tsx — Minimalist transfer progress drawer.
+
 import React, { useState, useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -80,15 +82,15 @@ export const TransferQueueDrawer: React.FC = () => {
     : "Importing Files...";
 
   return (
-    <div className="fixed bottom-5 right-5 z-40 w-80 rounded-xl bg-zinc-900/95 backdrop-blur-md border border-zinc-800 shadow-2xl overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-3 bg-zinc-950/70 border-b border-zinc-800/80">
+    <div className="fixed bottom-5 right-5 z-40 w-80 rounded-2xl bg-[#1b1817]/95 backdrop-blur-md border border-white/[0.1] shadow-2xl overflow-hidden select-none animate-in fade-in slide-in-from-bottom-2 duration-150">
+      <div className="flex items-center justify-between px-4 py-3 bg-[#141211]/80 border-b border-white/[0.06]">
         <div className="flex items-center gap-2.5">
           {isComplete ? (
             <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
           ) : (
-            <Loader2 className="w-4 h-4 text-indigo-400 animate-spin shrink-0" />
+            <Loader2 className="w-4 h-4 text-purple-400 animate-spin shrink-0" />
           )}
-          <span className="text-xs font-semibold text-zinc-200">
+          <span className="text-xs font-semibold text-stone-200">
             {headerTitle}
           </span>
         </div>
@@ -97,7 +99,8 @@ export const TransferQueueDrawer: React.FC = () => {
           <button
             type="button"
             onClick={() => setMinimized((m) => !m)}
-            className="p-1 text-zinc-400 hover:text-zinc-200 rounded hover:bg-zinc-800 transition-colors"
+            className="p-1 text-stone-400 hover:text-stone-200 rounded-lg hover:bg-white/[0.06] transition-colors cursor-pointer"
+            title={minimized ? "Expand" : "Minimize"}
           >
             {minimized ? (
               <ChevronUp className="w-3.5 h-3.5" />
@@ -105,44 +108,45 @@ export const TransferQueueDrawer: React.FC = () => {
               <ChevronDown className="w-3.5 h-3.5" />
             )}
           </button>
-          {isComplete && (
-            <button
-              type="button"
-              onClick={() => setVisible(false)}
-              className="p-1 text-zinc-400 hover:text-zinc-200 rounded hover:bg-zinc-800 transition-colors"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => setVisible(false)}
+            className="p-1 text-stone-400 hover:text-stone-200 rounded-lg hover:bg-white/[0.06] transition-colors cursor-pointer"
+            title="Dismiss"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
         </div>
       </div>
 
       {!minimized && (
-        <div className="p-4 space-y-2.5">
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-zinc-300 font-medium truncate max-w-[180px]">
-              {progress.current_item || "Done"}
+        <div className="p-4 space-y-3">
+          <div className="flex items-center justify-between text-xs text-stone-400">
+            <span className="truncate max-w-[190px]" title={progress.current_item}>
+              {progress.current_item}
             </span>
-            <span className="text-zinc-400 font-mono">
-              {progress.items_completed} / {progress.total_items}
-            </span>
+            <span className="font-semibold text-stone-200 ml-2">{percent}%</span>
           </div>
 
-          <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+          <div className="w-full h-1.5 rounded-full bg-[#121010] overflow-hidden border border-white/[0.04]">
             <div
-              className={`h-full transition-all duration-150 ${
-                isComplete ? "bg-emerald-500" : "bg-indigo-500"
+              className={`h-full transition-all duration-150 rounded-full ${
+                isComplete ? "bg-emerald-500" : "bg-purple-500"
               }`}
               style={{ width: `${percent}%` }}
             />
           </div>
 
-          <div className="flex items-center justify-between text-xs text-zinc-500 font-mono">
+          <div className="flex items-center justify-between text-[11px] text-stone-400 font-mono pt-0.5">
             <span>
-              {formatBytes(progress.bytes_processed)} /{" "}
-              {formatBytes(progress.total_bytes)}
+              {progress.items_completed} / {progress.total_items} items
             </span>
-            <span>{percent}%</span>
+            {progress.total_bytes > 0 && (
+              <span>
+                {formatBytes(progress.bytes_processed)} /{" "}
+                {formatBytes(progress.total_bytes)}
+              </span>
+            )}
           </div>
         </div>
       )}

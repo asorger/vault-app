@@ -701,4 +701,155 @@ fn test_zstd_compressed_vault_roundtrip_and_range_seek() {
     db::lock_db(handle.conn).expect("lock should succeed");
 }
 
+#[test]
+fn test_batch_deletion_atomic() {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = create_test_data(tmp.path());
+    let vault_dir = tmp.path().join("BatchDelVault");
+
+    let handle = create_test_vault(&vault_dir, "BatchDelVault", "P@ssword123!");
+
+    vfs::ingest_path_recursive(&handle, &data_dir, None, false)
+        .expect("ingest should succeed");
+
+    // Verify files exist in database
+    let count: i64 = handle
+        .conn
+        .query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 3);
+
+    let folder_count: i64 = handle
+        .conn
+        .query_row("SELECT COUNT(*) FROM folders", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(folder_count, 3);
+
+    // Collect all top-level folder IDs
+    let mut top_folder_id: String = String::new();
+    handle
+        .conn
+        .query_row(
+            "SELECT id FROM folders WHERE parent_id IS NULL",
+            [],
+            |r| {
+                top_folder_id = r.get(0)?;
+                Ok(())
+            },
+        )
+        .unwrap();
+
+    let items_to_delete = vec![top_folder_id];
+
+    // Run batch deletion
+    vfs::delete_items_batch(&handle, &items_to_delete, &mut |_, _, _| {})
+        .expect("batch deletion should succeed");
+
+    // Verify all files and folders are atomically gone
+    let count_after: i64 = handle
+        .conn
+        .query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count_after, 0, "All files must be deleted");
+
+    let folder_count_after: i64 = handle
+        .conn
+        .query_row("SELECT COUNT(*) FROM folders", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(folder_count_after, 0, "All folders must be deleted");
+
+    db::lock_db(handle.conn).expect("lock should succeed");
+}
+
+#[test]
+fn test_retroactive_compression_toggle() {
+    let tmp = TempDir::new().unwrap();
+    let vault_dir = tmp.path().join("CompressionMigrationVault.vault");
+
+    let handle = create_test_vault(&vault_dir, "CompressionMigrationVault", "SecurePass123!");
+
+    // Initially compression setting is false
+    let initial_setting = db::get_vault_compression_setting(&handle.conn).unwrap();
+    assert!(!initial_setting, "Default compression setting should be false");
+
+    // Ingest a repeating compressible text file uncompressed
+    let raw_text = "ANTIGRAVITY_TEST_COMPRESSION_LINE\n".repeat(5000);
+    let raw_data = raw_text.into_bytes();
+    let file_path = tmp.path().join("compressible.txt");
+    fs::write(&file_path, &raw_data).unwrap();
+    let expected_hash = sha256_file(&file_path);
+
+    let mut report = vfs::IngestReport::default();
+    vfs::ingest_file_resilient(
+        &handle,
+        &file_path,
+        raw_data.len() as u64,
+        None,
+        false, // uncompressed initially
+        &mut report,
+        &mut |_, _, _| {},
+    )
+    .expect("ingest should succeed");
+
+    let (file_id, is_compressed_init): (String, i64) = handle
+        .conn
+        .query_row(
+            "SELECT id, compressed FROM files WHERE original_name = 'compressible.txt'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(is_compressed_init, 0, "Should be initially uncompressed");
+
+    // Toggle vault compression ON retroactively
+    vfs::reprocess_vault_compression(&handle, true, &mut |_, _, _, _, _| {})
+        .expect("reprocess compression enable should succeed");
+
+    let setting_after = db::get_vault_compression_setting(&handle.conn).unwrap();
+    assert!(setting_after, "Setting must now be true");
+
+    let is_compressed_now: i64 = handle
+        .conn
+        .query_row(
+            "SELECT compressed FROM files WHERE id = ?1",
+            rusqlite::params![file_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(is_compressed_now, 1, "File must now be marked compressed");
+
+    // Verify exported file matches hash after compression
+    let export_dir = tmp.path().join("export_compressed");
+    fs::create_dir_all(&export_dir).unwrap();
+    vfs::export_item(&handle, &file_id, &export_dir).expect("export should succeed");
+    let exported_file = export_dir.join("compressible.txt");
+    assert_eq!(sha256_file(&exported_file), expected_hash);
+
+    // Toggle vault compression back OFF retroactively
+    vfs::reprocess_vault_compression(&handle, false, &mut |_, _, _, _, _| {})
+        .expect("reprocess compression disable should succeed");
+
+    let setting_final = db::get_vault_compression_setting(&handle.conn).unwrap();
+    assert!(!setting_final, "Setting must now be false");
+
+    let is_compressed_final: i64 = handle
+        .conn
+        .query_row(
+            "SELECT compressed FROM files WHERE id = ?1",
+            rusqlite::params![file_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(is_compressed_final, 0, "File must now be marked uncompressed");
+
+    // Verify exported file matches hash after decompression
+    let export_dir_decomp = tmp.path().join("export_decompressed");
+    fs::create_dir_all(&export_dir_decomp).unwrap();
+    vfs::export_item(&handle, &file_id, &export_dir_decomp).expect("export should succeed");
+    let exported_file_decomp = export_dir_decomp.join("compressible.txt");
+    assert_eq!(sha256_file(&exported_file_decomp), expected_hash);
+
+    db::lock_db(handle.conn).expect("lock should succeed");
+}
+
 

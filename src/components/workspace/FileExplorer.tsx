@@ -1,6 +1,13 @@
+// src/components/workspace/FileExplorer.tsx — Minimalist file explorer canvas with marquee selection.
+
 import React, { useState, useRef, useEffect } from "react";
 import { Upload, FolderPlus, SearchX } from "lucide-react";
-import type { VirtualFolder, VirtualFile, ViewMode, GridSize } from "../../types/vault";
+import type {
+  VirtualFolder,
+  VirtualFile,
+  ViewMode,
+  GridSize,
+} from "../../types/vault";
 import { GridView } from "./GridView";
 import { TableView } from "./TableView";
 import { Button } from "../ui/Button";
@@ -91,9 +98,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
       const currentX = e.clientX - rect.left + container.scrollLeft;
       const currentY = e.clientY - rect.top + container.scrollTop;
 
-      setMarquee((prev) =>
-        prev ? { ...prev, currentX, currentY } : null
-      );
+      setMarquee((prev) => (prev ? { ...prev, currentX, currentY } : null));
 
       const boxLeft = Math.min(marquee.startX, currentX);
       const boxRight = Math.max(marquee.startX, currentX);
@@ -103,7 +108,8 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
       if (boxRight - boxLeft < 4 && boxBottom - boxTop < 4) return;
 
       const nextSelected = new Set<string>(initialSelectionRef.current);
-      const itemNodes = container.querySelectorAll<HTMLElement>("[data-item-id]");
+      const itemNodes =
+        container.querySelectorAll<HTMLElement>("[data-item-id]");
 
       itemNodes.forEach((node) => {
         const id = node.getAttribute("data-item-id");
@@ -166,10 +172,10 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
 
   if (loading && isEmpty) {
     return (
-      <div className="flex-1 flex items-center justify-center text-zinc-500 text-sm">
+      <div className="flex-1 flex items-center justify-center text-stone-500 text-xs">
         <div className="flex items-center gap-3">
-          <div className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-          <span>Loading...</span>
+          <div className="w-5 h-5 border-2 border-purple-500 border-t-transparent rounded-full animate-spin" />
+          <span>Loading vault contents...</span>
         </div>
       </div>
     );
@@ -178,7 +184,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
   return (
     <div
       ref={containerRef}
-      className="relative flex-1 overflow-y-auto select-none"
+      className="relative flex-1 overflow-y-auto select-none bg-[#121010]"
       onMouseDown={handleContainerMouseDown}
       onContextMenu={(e) => {
         e.preventDefault();
@@ -229,34 +235,44 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
         >
           {searchQuery.trim() ? (
             <>
-              <div className="w-14 h-14 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center mb-4 text-zinc-500">
+              <div className="w-14 h-14 rounded-3xl bg-[#1b1817] border border-white/[0.08] flex items-center justify-center mb-4 text-stone-500">
                 <SearchX className="w-7 h-7" />
               </div>
-              <h3 className="text-base font-medium text-zinc-300 mb-1">
+              <h3 className="text-sm font-semibold text-stone-200 mb-1">
                 No matching files or folders
               </h3>
-              <p className="text-sm text-zinc-500 max-w-xs">
+              <p className="text-xs text-stone-400 max-w-xs">
                 No items match &ldquo;{searchQuery}&rdquo;.
               </p>
             </>
           ) : (
             <>
-              <h3 className="text-base font-medium text-zinc-300 mb-1">
+              <h3 className="text-base font-semibold text-stone-200 mb-1">
                 This folder is empty
               </h3>
-              <p className="text-sm text-zinc-500 max-w-sm mb-5">
-                Drag and drop files or folders here, or use the buttons below.
+              <p className="text-xs text-stone-400 max-w-sm mb-6">
+                Drag and drop files or folders here, or use the actions below.
               </p>
               <div
                 className="flex items-center gap-3"
                 onMouseDown={(e) => e.stopPropagation()}
               >
-                <Button variant="primary" size="md" onClick={onImportFiles}>
-                  <Upload className="w-4 h-4" />
+                <Button
+                  variant="primary"
+                  size="md"
+                  pill
+                  onClick={onImportFiles}
+                  icon={<Upload className="w-4 h-4" />}
+                >
                   Import Files
                 </Button>
-                <Button variant="secondary" size="md" onClick={onNewFolder}>
-                  <FolderPlus className="w-4 h-4" />
+                <Button
+                  variant="secondary"
+                  size="md"
+                  pill
+                  onClick={onNewFolder}
+                  icon={<FolderPlus className="w-4 h-4 text-purple-400" />}
+                >
                   New Folder
                 </Button>
               </div>
@@ -270,7 +286,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
         (Math.abs(marquee.currentX - marquee.startX) > 4 ||
           Math.abs(marquee.currentY - marquee.startY) > 4) && (
           <div
-            className="pointer-events-none absolute z-30 border border-indigo-400/80 bg-indigo-500/15 rounded-sm"
+            className="pointer-events-none absolute z-30 border border-purple-400/80 bg-purple-500/15 rounded-md"
             style={{
               left: Math.min(marquee.startX, marquee.currentX),
               top: Math.min(marquee.startY, marquee.currentY),

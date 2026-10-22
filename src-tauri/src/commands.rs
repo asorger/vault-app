@@ -126,6 +126,17 @@ pub struct VaultInfo {
     pub id: String,
     pub name: String,
     pub vault_path: String,
+    pub is_compressed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompressionProgressPayload {
+    pub current_file: String,
+    pub files_completed: usize,
+    pub total_files: usize,
+    pub bytes_processed: u64,
+    pub total_bytes: u64,
+    pub is_complete: bool,
 }
 
 /// Virtual folder record returned to the frontend, including recursive size and file count.
@@ -485,13 +496,21 @@ pub fn close_vault_arc(vault_arc: Arc<Mutex<VaultHandle>>) -> AppResult<()> {
         Ok(mutex) => {
             if let Ok(handle) = mutex.into_inner() {
                 cleanup_staging_dir(&handle.vault_path);
+                let vault_path = handle.vault_path.clone();
+                let is_single = handle.is_single_file();
                 db::lock_db(handle.conn)?;
+                if is_single {
+                    vfs::cleanup_wal_shm_files(&vault_path);
+                }
             }
         }
         Err(arc) => {
             if let Ok(handle_guard) = arc.lock() {
                 cleanup_staging_dir(&handle_guard.vault_path);
                 let _ = handle_guard.conn.pragma_update(None, "wal_checkpoint", "TRUNCATE");
+                if handle_guard.is_single_file() {
+                    vfs::hide_wal_shm_files(&handle_guard.vault_path);
+                }
             }
         }
     }
@@ -542,6 +561,7 @@ pub async fn create_vault_instance(
         let user_facing_path = vault_file_path.to_string_lossy().to_string();
         let id = uuid::Uuid::new_v4().to_string();
 
+        let is_compressed = db::get_vault_compression_setting(&handle.conn).unwrap_or(false);
         let mut sessions = state_clone
             .sessions
             .lock()
@@ -552,6 +572,7 @@ pub async fn create_vault_instance(
             id,
             name: clean_name,
             vault_path: user_facing_path,
+            is_compressed,
         })
     })
     .await
@@ -596,10 +617,12 @@ pub async fn open_vault_instance(
                         let user_facing = vault_user_facing_path(&existing_handle.vault_path)
                             .to_string_lossy()
                             .to_string();
+                        let is_compressed = db::get_vault_compression_setting(&existing_handle.conn).unwrap_or(false);
                         return Ok(VaultInfo {
                             id: existing_id.clone(),
                             name: clean_vault_display_name(&existing_handle.vault_path),
                             vault_path: user_facing,
+                            is_compressed,
                         });
                     }
                 }
@@ -633,6 +656,7 @@ pub async fn open_vault_instance(
             .to_string_lossy()
             .to_string();
         let id = uuid::Uuid::new_v4().to_string();
+        let is_compressed = db::get_vault_compression_setting(&handle.conn).unwrap_or(false);
 
         let mut sessions = state_clone
             .sessions
@@ -644,6 +668,7 @@ pub async fn open_vault_instance(
             id,
             name,
             vault_path,
+            is_compressed,
         })
     })
     .await
@@ -683,7 +708,12 @@ pub async fn lock_vault_instance(
             if let Ok(mut single) = state_clone.session.lock() {
                 if let Some(handle) = single.take() {
                     cleanup_staging_dir(&handle.vault_path);
+                    let vault_path = handle.vault_path.clone();
+                    let is_single = handle.is_single_file();
                     let _ = db::lock_db(handle.conn);
+                    if is_single {
+                        vfs::cleanup_wal_shm_files(&vault_path);
+                    }
                 }
             }
         }
@@ -989,20 +1019,25 @@ pub async fn delete_virtual_items(
 
     let vault_arc = state.get_vault_arc(vault_id.as_deref())?;
     tauri::async_runtime::spawn_blocking(move || {
-        let (total_bytes, total_files) = {
+        let item_ids: Vec<String> = items.iter().map(|i| i.id.clone()).collect();
+
+        // 1. Gather all target files and folders in ONE fast indexed query (<2ms)
+        let plan = {
             let handle = vault_arc
                 .lock()
                 .map_err(|_| AppError::VaultFormat("Failed to acquire vault lock".into()))?;
-            let item_ids: Vec<String> = items.iter().map(|i| i.id.clone()).collect();
-            vfs::compute_items_size_and_count(&handle.conn, &item_ids)
+            vfs::gather_deletion_plan(&handle.conn, &item_ids)?
         };
-        let total_items = total_files.max(items.len());
 
+        let total_items = plan.files.len() + plan.folders.len();
+        let total_bytes = plan.total_bytes;
+
+        // Immediately emit starting progress so UI shows active state right away
         let _ = app_handle.emit(
             "vault://transfer-progress",
             TransferProgressPayload {
                 phase: "delete".into(),
-                current_item: "Preparing deletion...".into(),
+                current_item: "Starting deletion...".into(),
                 items_completed: 0,
                 total_items,
                 bytes_processed: 0,
@@ -1014,51 +1049,29 @@ pub async fn delete_virtual_items(
         let mut bytes_processed = 0u64;
         let mut last_emit = Instant::now();
 
-        for item in &items {
-            let mut item_name = String::new();
-            let mut item_bytes = 0u64;
-            let mut item_files = 0usize;
-
+        // 2. Delete files in small chunks (10 files per transaction) and release the Mutex
+        // lock after each chunk so the UI thread is never blocked and progress updates in real time
+        for chunk in plan.files.chunks(10) {
             {
                 let handle = vault_arc
                     .lock()
                     .map_err(|_| AppError::VaultFormat("Failed to acquire vault lock".into()))?;
-                let _ = handle.conn.execute_batch("BEGIN IMMEDIATE;");
-                let del_res = vfs::delete_item_with_progress(
-                    &handle,
-                    &item.id,
-                    &mut |bytes_delta, files_delta, name| {
-                        item_name = name.to_string();
-                        item_bytes = item_bytes.saturating_add(bytes_delta);
-                        item_files = item_files.saturating_add(files_delta);
-                    },
-                );
+                vfs::delete_files_chunk(&handle, chunk)?;
+            } // Lock released!
 
-                match del_res {
-                    Ok(_) => {
-                        let _ = handle.conn.execute_batch("COMMIT;");
-                    }
-                    Err(e) => {
-                        let _ = handle.conn.execute_batch("ROLLBACK;");
-                        return Err(e);
-                    }
-                }
-            } // Lock released here between items so directory listing and explorer update live
+            for f in chunk {
+                bytes_processed = bytes_processed.saturating_add(f.size_bytes.max(0) as u64);
+                items_completed += 1;
+            }
 
-            bytes_processed = bytes_processed.saturating_add(item_bytes);
-            items_completed = items_completed.saturating_add(item_files.max(1));
-
-            if last_emit.elapsed() >= Duration::from_millis(30) || items_completed >= total_items {
+            let cur_name = chunk.last().map(|f| f.original_name.as_str()).unwrap_or("Deleting...");
+            if last_emit.elapsed() >= Duration::from_millis(50) || items_completed >= total_items {
                 last_emit = Instant::now();
                 let _ = app_handle.emit(
                     "vault://transfer-progress",
                     TransferProgressPayload {
                         phase: "delete".into(),
-                        current_item: if item_name.is_empty() {
-                            "Deleted item".into()
-                        } else {
-                            item_name
-                        },
+                        current_item: format!("Deleting {}", cur_name),
                         items_completed: items_completed.min(total_items),
                         total_items,
                         bytes_processed: bytes_processed.min(total_bytes),
@@ -1069,6 +1082,15 @@ pub async fn delete_virtual_items(
             std::thread::yield_now();
         }
 
+        // 3. Delete folders
+        if !plan.folders.is_empty() {
+            let handle = vault_arc
+                .lock()
+                .map_err(|_| AppError::VaultFormat("Failed to acquire vault lock".into()))?;
+            vfs::delete_folders_list(&handle, &plan.folders)?;
+        }
+
+        // 4. Emit final completion event
         let _ = app_handle.emit(
             "vault://transfer-progress",
             TransferProgressPayload {
@@ -1078,6 +1100,75 @@ pub async fn delete_virtual_items(
                 total_items,
                 bytes_processed: total_bytes,
                 total_bytes,
+            },
+        );
+
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::VaultFormat(format!("Background task error: {}", e)))?
+}
+
+/// Retrieve the vault-wide compression setting for the active vault.
+#[tauri::command]
+pub async fn get_vault_compression(
+    vault_id: Option<String>,
+    state: State<'_, AppState>,
+) -> AppResult<bool> {
+    let vault_arc = state.get_vault_arc(vault_id.as_deref())?;
+    let handle = vault_arc
+        .lock()
+        .map_err(|_| AppError::VaultFormat("Failed to acquire vault lock".into()))?;
+    db::get_vault_compression_setting(&handle.conn)
+}
+
+/// Retroactively compress or decompress all files in the active vault.
+#[tauri::command]
+pub async fn set_vault_compression(
+    enable: bool,
+    vault_id: Option<String>,
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    let vault_arc = state.get_vault_arc(vault_id.as_deref())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let handle = vault_arc
+            .lock()
+            .map_err(|_| AppError::VaultFormat("Failed to acquire vault lock".into()))?;
+
+        let mut last_emit = Instant::now();
+        let app = app_handle.clone();
+
+        vfs::reprocess_vault_compression(
+            &handle,
+            enable,
+            &mut |comp_files, tot_files, comp_bytes, tot_bytes, file_name| {
+                if last_emit.elapsed() >= Duration::from_millis(80) || comp_files >= tot_files {
+                    last_emit = Instant::now();
+                    let _ = app.emit(
+                        "vault://compression-progress",
+                        CompressionProgressPayload {
+                            current_file: file_name.to_string(),
+                            files_completed: comp_files,
+                            total_files: tot_files,
+                            bytes_processed: comp_bytes,
+                            total_bytes: tot_bytes,
+                            is_complete: comp_files >= tot_files,
+                        },
+                    );
+                }
+            },
+        )?;
+
+        let _ = app_handle.emit(
+            "vault://compression-progress",
+            CompressionProgressPayload {
+                current_file: "Complete".into(),
+                files_completed: 1,
+                total_files: 1,
+                bytes_processed: 0,
+                total_bytes: 0,
+                is_complete: true,
             },
         );
 
@@ -1100,11 +1191,10 @@ pub async fn ingest_os_paths(
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> AppResult<vfs::IngestReport> {
-    let should_compress = compress.unwrap_or(false);
     let vault_arc = state.get_vault_arc(vault_id.as_deref())?;
 
     tauri::async_runtime::spawn_blocking(move || {
-        let (canonical_vault, canonical_staging, vault_path_for_check) = {
+        let (canonical_vault, canonical_staging, vault_path_for_check, should_compress) = {
             let handle = vault_arc
                 .lock()
                 .map_err(|_| AppError::VaultFormat("Failed to acquire vault lock".into()))?;
@@ -1114,7 +1204,10 @@ pub async fn ingest_os_paths(
                 .unwrap_or_else(|_| handle.vault_path.clone());
             let sb = staging_base_dir(&handle.vault_path);
             let cs = sb.canonicalize().unwrap_or_else(|_| sb.clone());
-            (cv, cs, handle.vault_path.clone())
+            let comp = compress.unwrap_or_else(|| {
+                db::get_vault_compression_setting(&handle.conn).unwrap_or(false)
+            });
+            (cv, cs, handle.vault_path.clone(), comp)
         };
 
         // Filter out any paths that are the vault itself or inside our staging directory
@@ -1188,7 +1281,7 @@ pub async fn ingest_os_paths(
                              bytes_proc: u64,
                              items_comp: usize,
                              force: bool| {
-            if force || last_e.elapsed() >= Duration::from_millis(30) || items_comp >= effective_total_items {
+            if force || last_e.elapsed() >= Duration::from_millis(80) || items_comp >= effective_total_items {
                 *last_e = Instant::now();
                 let _ = app.emit(
                     "vault://transfer-progress",
@@ -1433,7 +1526,7 @@ pub async fn export_virtual_items(
                     &mut |bytes_delta, files_delta, name| {
                         bytes_processed = bytes_processed.saturating_add(bytes_delta);
                         items_completed = items_completed.saturating_add(files_delta);
-                        if last_emit.elapsed() >= Duration::from_millis(40)
+                        if last_emit.elapsed() >= Duration::from_millis(80)
                             || items_completed >= total_items
                         {
                             last_emit = Instant::now();

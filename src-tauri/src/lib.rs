@@ -59,6 +59,8 @@ pub fn run() {
             commands::start_os_drag_export,
             commands::read_file_text_preview,
             commands::search_vault,
+            commands::get_vault_compression,
+            commands::set_vault_compression,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -74,7 +76,12 @@ pub fn run() {
             if let Ok(mut guard) = state.session.lock() {
                 if let Some(session) = guard.take() {
                     commands::cleanup_staging_dir(&session.vault_path);
+                    let vault_path = session.vault_path.clone();
+                    let is_single = session.is_single_file();
                     let _ = db::lock_db(session.conn);
+                    if is_single {
+                        vfs::cleanup_wal_shm_files(&vault_path);
+                    }
                 }
             };
         }

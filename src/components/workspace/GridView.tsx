@@ -1,19 +1,15 @@
+// src/components/workspace/GridView.tsx — Responsive grid view for vault folders and files.
+
 import React from "react";
-import {
-  Folder,
-  FileText,
-  FileImage,
-  FileVideo,
-  FileAudio,
-  FileArchive,
-  FileCode,
-  FileSpreadsheet,
-  File as FileIcon,
-  Check,
-  CornerLeftUp,
-} from "lucide-react";
+import { CornerLeftUp } from "lucide-react";
 import type { VirtualFolder, VirtualFile, GridSize } from "../../types/vault";
-import { formatBytes, getVaultFileUrl } from "../../services/tauri";
+import { FolderGridCard } from "./cards/FolderGridCard";
+import { FileGridCard } from "./cards/FileGridCard";
+import { getFileIcon as getSharedFileIcon } from "../../utils/fileIcons";
+
+// Re-export getFileIcon for backwards compatibility
+export const getFileIcon = (mimeType: string, name: string, className = "w-9 h-9") =>
+  getSharedFileIcon(mimeType, name, { className });
 
 interface GridViewProps {
   vaultId: string;
@@ -44,45 +40,6 @@ interface GridViewProps {
     isFolder: boolean,
     name: string
   ) => void;
-}
-
-export function getFileIcon(mimeType: string, name: string, className = "w-9 h-9") {
-  const lower = name.toLowerCase();
-  if (mimeType.startsWith("image/")) {
-    return <FileImage className={`${className} text-emerald-400`} />;
-  }
-  if (mimeType.startsWith("video/") || /\.(mp4|webm|mov|mkv|avi|m4v)$/.test(lower)) {
-    return <FileVideo className={`${className} text-purple-400`} />;
-  }
-  if (mimeType.startsWith("audio/") || /\.(mp3|wav|flac|ogg|m4a|aac)$/.test(lower)) {
-    return <FileAudio className={`${className} text-pink-400`} />;
-  }
-  if (
-    mimeType.includes("zip") ||
-    mimeType.includes("compressed") ||
-    /\.(zip|rar|7z|tar|gz|bz2|xz)$/.test(lower)
-  ) {
-    return <FileArchive className={`${className} text-amber-400`} />;
-  }
-  if (
-    mimeType.includes("json") ||
-    mimeType.includes("javascript") ||
-    mimeType.includes("xml") ||
-    /\.(ts|tsx|js|jsx|py|rs|go|c|cpp|h|cs|java|html|css|sh|yaml|yml|toml|sql)$/.test(lower)
-  ) {
-    return <FileCode className={`${className} text-sky-400`} />;
-  }
-  if (mimeType.includes("csv") || /\.(csv|xls|xlsx|ods)$/.test(lower)) {
-    return <FileSpreadsheet className={`${className} text-teal-400`} />;
-  }
-  if (
-    mimeType.startsWith("text/") ||
-    mimeType.includes("pdf") ||
-    /\.(txt|md|pdf|doc|docx|rtf)$/.test(lower)
-  ) {
-    return <FileText className={`${className} text-blue-400`} />;
-  }
-  return <FileIcon className={`${className} text-zinc-400`} />;
 }
 
 export const GridView: React.FC<GridViewProps> = ({
@@ -129,188 +86,58 @@ export const GridView: React.FC<GridViewProps> = ({
             e.stopPropagation();
             onContextMenu(e, "parent", "__parent__", "..");
           }}
-          className={`group relative rounded-xl p-3 border transition-all cursor-pointer flex flex-col justify-between ${
+          className={`group relative rounded-2xl p-3.5 border transition-all cursor-pointer flex flex-col justify-between ${
             hoveredDropFolderId === "__parent__"
-              ? "bg-indigo-600/25 border-indigo-400 shadow-lg ring-2 ring-indigo-500/40"
-              : "bg-zinc-900/40 border-zinc-800/70 hover:bg-zinc-900/80 hover:border-zinc-700"
+              ? "bg-purple-950/40 border-purple-400 shadow-lg ring-2 ring-purple-500/50"
+              : "bg-[#1a1716] border-white/[0.08] hover:bg-[#221e1d] hover:border-white/[0.14]"
           }`}
           title="Double-click to go to parent folder, or drop items here to move them up"
         >
           <div
-            className={`w-full ${previewHeightClass} rounded-lg bg-zinc-950/50 border border-zinc-800/50 flex items-center justify-center mb-2.5`}
+            className={`w-full ${previewHeightClass} rounded-xl bg-[#131110] border border-white/[0.05] flex items-center justify-center mb-2.5`}
           >
             <CornerLeftUp
-              className={`${iconSizeClass} text-zinc-400 group-hover:text-zinc-200 transition-transform group-hover:-translate-y-0.5`}
+              className={`${iconSizeClass} text-stone-400 group-hover:text-stone-200 transition-transform group-hover:-translate-y-0.5`}
             />
           </div>
           <div>
-            <p className="text-sm font-semibold text-zinc-200 truncate">..</p>
-            <p className="text-xs text-zinc-500 mt-0.5">Parent Folder</p>
+            <p className="text-xs font-semibold text-stone-100 truncate">..</p>
+            <p className="text-[11px] text-stone-400 mt-0.5">Parent Folder</p>
           </div>
         </div>
       )}
 
       {/* Virtual Folders */}
-      {folders.map((folder) => {
-        const isSelected = selectedIds.has(folder.id);
-        const isDragOver = hoveredDropFolderId === folder.id;
-        return (
-          <div
-            key={folder.id}
-            data-item-id={folder.id}
-            data-drop-folder-id={folder.id}
-            onMouseDown={(e) => {
-              e.stopPropagation();
-              onItemMouseDown(e, folder.id, true, folder.name);
-            }}
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggleSelect(folder.id, true, false, e);
-            }}
-            onDoubleClick={(e) => {
-              e.stopPropagation();
-              onOpenFolder(folder.id);
-            }}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              onContextMenu(e, "folder", folder.id, folder.name);
-            }}
-            className={`group relative rounded-xl p-3 border transition-all cursor-pointer flex flex-col justify-between ${
-              isDragOver
-                ? "bg-indigo-600/25 border-indigo-400 ring-2 ring-indigo-500/40"
-                : isSelected
-                ? "bg-indigo-600/15 border-indigo-500/60 shadow-sm"
-                : "bg-zinc-900/50 border-zinc-800/70 hover:bg-zinc-900 hover:border-zinc-700/80"
-            }`}
-          >
-            {/* Additive Checkbox */}
-            <button
-              type="button"
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                onToggleSelect(folder.id, true, true, e);
-              }}
-              className={`absolute top-2.5 left-2.5 z-10 w-5 h-5 rounded-md flex items-center justify-center transition-all ${
-                isSelected
-                  ? "bg-indigo-600 text-white border border-indigo-400 opacity-100"
-                  : "bg-zinc-900/85 border border-zinc-700 opacity-0 group-hover:opacity-100 hover:border-zinc-400"
-              }`}
-              title="Select item"
-            >
-              {isSelected && <Check className="w-3.5 h-3.5 stroke-[3]" />}
-            </button>
-
-            <div
-              className={`w-full ${previewHeightClass} rounded-lg bg-zinc-950/60 border border-zinc-800/50 flex items-center justify-center mb-2.5`}
-            >
-              <Folder
-                className={`${iconSizeClass} text-indigo-400 fill-indigo-500/20 transition-transform group-hover:scale-105`}
-              />
-            </div>
-
-            <div>
-              <p
-                className="text-sm font-medium text-zinc-200 truncate"
-                title={folder.name}
-              >
-                {folder.name}
-              </p>
-              <div className="flex items-center justify-between text-xs text-zinc-500 mt-0.5">
-                <span className="font-mono">{formatBytes(folder.size_bytes)}</span>
-                <span>
-                  {folder.file_count} {folder.file_count === 1 ? "file" : "files"}
-                </span>
-              </div>
-            </div>
-          </div>
-        );
-      })}
+      {folders.map((folder) => (
+        <FolderGridCard
+          key={folder.id}
+          folder={folder}
+          isSelected={selectedIds.has(folder.id)}
+          isDragOver={hoveredDropFolderId === folder.id}
+          previewHeightClass={previewHeightClass}
+          iconSizeClass={iconSizeClass}
+          onToggleSelect={onToggleSelect}
+          onOpenFolder={onOpenFolder}
+          onContextMenu={onContextMenu}
+          onItemMouseDown={onItemMouseDown}
+        />
+      ))}
 
       {/* Virtual Files */}
-      {files.map((file) => {
-        const isSelected = selectedIds.has(file.id);
-        const isImage =
-          file.mime_type.startsWith("image/") && file.size_bytes < 25 * 1024 * 1024;
-
-        return (
-          <div
-            key={file.id}
-            data-item-id={file.id}
-            onMouseDown={(e) => {
-              e.stopPropagation();
-              onItemMouseDown(e, file.id, false, file.original_name);
-            }}
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggleSelect(file.id, false, false, e);
-            }}
-            onDoubleClick={(e) => {
-              e.stopPropagation();
-              onPreviewFile(file);
-            }}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              onContextMenu(e, "file", file.id, file.original_name);
-            }}
-            className={`group relative rounded-xl p-3 border transition-all cursor-pointer flex flex-col justify-between ${
-              isSelected
-                ? "bg-indigo-600/15 border-indigo-500/60 shadow-sm"
-                : "bg-zinc-900/50 border-zinc-800/70 hover:bg-zinc-900 hover:border-zinc-700/80"
-            }`}
-          >
-            {/* Additive Checkbox */}
-            <button
-              type="button"
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                onToggleSelect(file.id, false, true, e);
-              }}
-              className={`absolute top-2.5 left-2.5 z-10 w-5 h-5 rounded-md flex items-center justify-center transition-all ${
-                isSelected
-                  ? "bg-indigo-600 text-white border border-indigo-400 opacity-100"
-                  : "bg-zinc-900/85 border border-zinc-700 opacity-0 group-hover:opacity-100 hover:border-zinc-400"
-              }`}
-              title="Select item"
-            >
-              {isSelected && <Check className="w-3.5 h-3.5 stroke-[3]" />}
-            </button>
-
-            <div
-              className={`w-full ${previewHeightClass} rounded-lg bg-zinc-950/60 border border-zinc-800/50 flex items-center justify-center overflow-hidden mb-2.5`}
-            >
-              {isImage ? (
-                <img
-                  src={getVaultFileUrl(vaultId, file.id)}
-                  alt={file.original_name}
-                  loading="lazy"
-                  draggable={false}
-                  className="w-full h-full object-cover transition-transform group-hover:scale-105"
-                />
-              ) : (
-                <div className="transition-transform group-hover:scale-105">
-                  {getFileIcon(file.mime_type, file.original_name, iconSizeClass)}
-                </div>
-              )}
-            </div>
-
-            <div>
-              <p
-                className="text-sm font-medium text-zinc-200 truncate"
-                title={file.original_name}
-              >
-                {file.original_name}
-              </p>
-              <p className="text-xs text-zinc-500 mt-0.5 font-mono">
-                {formatBytes(file.size_bytes)}
-              </p>
-            </div>
-          </div>
-        );
-      })}
+      {files.map((file) => (
+        <FileGridCard
+          key={file.id}
+          file={file}
+          vaultId={vaultId}
+          isSelected={selectedIds.has(file.id)}
+          previewHeightClass={previewHeightClass}
+          iconSizeClass={iconSizeClass}
+          onToggleSelect={onToggleSelect}
+          onPreviewFile={onPreviewFile}
+          onContextMenu={onContextMenu}
+          onItemMouseDown={onItemMouseDown}
+        />
+      ))}
     </div>
   );
 };

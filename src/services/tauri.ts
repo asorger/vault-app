@@ -349,6 +349,30 @@ export async function searchVault(
 }
 
 /**
+ * Retrieve the vault-wide compression setting for the active vault.
+ */
+export async function getVaultCompression(
+  vaultId?: string
+): Promise<boolean> {
+  return await invoke<boolean>("get_vault_compression", {
+    vaultId: vaultId ?? null,
+  });
+}
+
+/**
+ * Retroactively compress or decompress all files in the active vault.
+ */
+export async function setVaultCompression(
+  enable: boolean,
+  vaultId?: string
+): Promise<void> {
+  return await invoke<void>("set_vault_compression", {
+    enable,
+    vaultId: vaultId ?? null,
+  });
+}
+
+/**
  * Open a native file picker filtered to `.vault` files.
  */
 export async function selectVaultFile(

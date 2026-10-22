@@ -1,3 +1,5 @@
+// src/components/workspace/Workspace.tsx — Streamlined, minimalist vault workspace coordinator.
+
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
@@ -12,6 +14,7 @@ import type {
   VirtualFile,
   ItemIdentifier,
   TransferProgressPayload,
+  CompressionProgressPayload,
 } from "../../types/vault";
 import {
   listDirectory,
@@ -25,20 +28,27 @@ import {
   startOsDragExport,
   lockVaultInstance,
   checkIsVaultPath,
+  getVaultCompression,
+  setVaultCompression,
 } from "../../services/tauri";
 import { useNativeDragDrop } from "../../hooks/useNativeDragDrop";
-import { HeaderBar } from "./HeaderBar";
-import { Toolbar } from "./Toolbar";
+import { useWorkspaceNavigation } from "../../hooks/useWorkspaceNavigation";
+import { useWorkspaceSelection } from "../../hooks/useWorkspaceSelection";
+import { UnifiedHeader } from "./UnifiedHeader";
+import { FloatingActionBar } from "./FloatingActionBar";
 import { FileExplorer } from "./FileExplorer";
 import { DropOverlay } from "./DropOverlay";
 import { ContextMenu } from "./ContextMenu";
+import { VaultSettingsModal } from "./VaultSettingsModal";
 import {
   NamePromptModal,
   DeleteConfirmModal,
   ShredConfirmModal,
   DiskSpaceWarningModal,
   PreviewModal,
-} from "./Modals";
+  CompressionConfirmModal,
+  CompressionProgressModal,
+} from "../modals";
 
 interface WorkspaceProps {
   vaultInfo: VaultInfo;
@@ -64,10 +74,15 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   onCloseVault,
   onOpenDroppedVault,
 }) => {
-  // Navigation history stack for Back / Forward / Up
-  const [history, setHistory] = useState<(string | null)[]>([null]);
-  const [historyIndex, setHistoryIndex] = useState<number>(0);
-  const currentFolderId = history[historyIndex] ?? null;
+  // Navigation hook
+  const {
+    currentFolderId,
+    canGoBack,
+    canGoForward,
+    navigateTo: navigateToFolder,
+    goBack,
+    goForward,
+  } = useWorkspaceNavigation(null);
 
   const [listing, setListing] = useState<DirectoryListing>({
     current_folder_id: null,
@@ -94,13 +109,17 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResults | null>(null);
   const [shredOriginals, setShredOriginals] = useState(false);
-  const [compressFiles, setCompressFiles] = useState(false);
+  const [isCompressed, setIsCompressed] = useState<boolean>(
+    vaultInfo.is_compressed ?? false
+  );
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [isCompressionConfirmOpen, setIsCompressionConfirmOpen] =
+    useState(false);
+  const [targetCompressionState, setTargetCompressionState] = useState(false);
+  const [compressionProgress, setCompressionProgress] =
+    useState<CompressionProgressPayload | null>(null);
 
-  // Selection state
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [lastSelectedId, setLastSelectedId] = useState<string | null>(null);
-
-  // Custom Pointer Drag state (replaces HTML5 draggable so there is never a banned cursor)
+  // Custom Pointer Drag state (internal move or edge OS drag)
   const [pointerDrag, setPointerDrag] = useState<PointerDragState | null>(null);
   const osDragTriggeredRef = useRef(false);
 
@@ -129,67 +148,44 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     singleName?: string;
   }>({ open: false, items: [] });
 
-  const [shredPromptPaths, setShredPromptPaths] = useState<string[] | null>(
-    null
-  );
-
+  const [shredPromptPaths, setShredPromptPaths] = useState<string[] | null>(null);
   const [previewFile, setPreviewFile] = useState<VirtualFile | null>(null);
 
-  const folderIdSet = useMemo(() => {
-    const set = new Set<string>();
-    listing.folders.forEach((f) => set.add(f.id));
-    if (searchResults) {
-      searchResults.folders.forEach((f) => set.add(f.id));
-    }
-    return set;
-  }, [listing.folders, searchResults]);
-
-  // Convert a set/array of IDs into ItemIdentifier[]
+  // Map IDs to item identifiers
   const toItemIdentifiers = useCallback(
-    (ids: Iterable<string> = selectedIds): ItemIdentifier[] => {
-      const items: ItemIdentifier[] = [];
-      for (const id of ids) {
-        items.push({
-          id,
-          is_folder: folderIdSet.has(id),
-        });
-      }
-      return items;
+    (explicitIds?: string[]): ItemIdentifier[] => {
+      const targetIds = explicitIds || Array.from(new Set<string>());
+      const folderSet = new Set(listing.folders.map((f) => f.id));
+      return targetIds.map((id) => ({
+        id,
+        is_folder: folderSet.has(id),
+      }));
     },
-    [selectedIds, folderIdSet]
+    [listing.folders]
   );
 
-  // Refresh current folder listing (supports silent in-place updates during active transfers)
+  // Refresh current folder listing
   const refreshDirectory = useCallback(
-    async (folderId: string | null = currentFolderId, silent: boolean = false) => {
-      if (!silent) {
-        setLoading(true);
-      }
+    async (folderId: string | null = currentFolderId, silent = false) => {
+      if (!silent) setLoading(true);
+      setErrorBanner(null);
       try {
         const data = await listDirectory(folderId, vaultInfo.id);
         setListing(data);
-        if (!silent) {
-          setSelectedIds(new Set());
-          setLastSelectedId(null);
-        }
       } catch (err) {
-        if (!silent) {
-          setErrorBanner(String(err));
-        }
+        reportError(err);
       } finally {
-        if (!silent) {
-          setLoading(false);
-        }
+        if (!silent) setLoading(false);
       }
     },
-    [currentFolderId, vaultInfo.id]
+    [currentFolderId, vaultInfo.id, reportError]
   );
 
   useEffect(() => {
     refreshDirectory(currentFolderId);
   }, [currentFolderId, refreshDirectory]);
 
-  // Listen for background file transfer events (file by file) and silently update explorer in real time
+  // Real-time silent refresh on background file transfer progress
   useEffect(() => {
     let lastSilent = 0;
     const unlistenPromise = listen<TransferProgressPayload>(
@@ -211,22 +207,66 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     };
   }, [currentFolderId, refreshDirectory]);
 
-  // Navigation helpers
-  const navigateToFolder = useCallback(
-    (folderId: string | null) => {
-      if (folderId === currentFolderId) return;
-      setSearchQuery("");
-      setHistory((prev) => {
-        const sliced = prev.slice(0, historyIndex + 1);
-        return [...sliced, folderId];
-      });
-      setHistoryIndex((prev) => prev + 1);
-    },
-    [currentFolderId, historyIndex]
-  );
+  // Initial vault compression setting
+  useEffect(() => {
+    let cancelled = false;
+    getVaultCompression(vaultInfo.id)
+      .then((val) => {
+        if (!cancelled) setIsCompressed(val);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [vaultInfo.id]);
 
-  const canGoBack = historyIndex > 0;
-  const canGoForward = historyIndex < history.length - 1;
+  // Listen for compression progress events
+  useEffect(() => {
+    const unlistenPromise = listen<CompressionProgressPayload>(
+      "vault://compression-progress",
+      (event) => {
+        const payload = event.payload;
+        setCompressionProgress(payload);
+        if (payload.is_complete) {
+          setIsCompressed(targetCompressionState);
+          setTimeout(() => {
+            setCompressionProgress(null);
+            refreshDirectory(currentFolderId);
+          }, 600);
+        }
+      }
+    );
+
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, [targetCompressionState, currentFolderId, refreshDirectory]);
+
+  const handleRequestChangeCompression = useCallback((enable: boolean) => {
+    setTargetCompressionState(enable);
+    setIsSettingsModalOpen(false);
+    setIsCompressionConfirmOpen(true);
+  }, []);
+
+  const handleConfirmCompressionChange = useCallback(async () => {
+    setIsCompressionConfirmOpen(false);
+    setCompressionProgress({
+      current_file: "Preparing migration...",
+      files_completed: 0,
+      total_files: 1,
+      bytes_processed: 0,
+      total_bytes: 0,
+      is_complete: false,
+    });
+    try {
+      await setVaultCompression(targetCompressionState, vaultInfo.id);
+      setIsCompressed(targetCompressionState);
+    } catch (err) {
+      reportError(err);
+      setCompressionProgress(null);
+    }
+  }, [targetCompressionState, vaultInfo.id, reportError]);
+
   const canGoUp = currentFolderId !== null;
 
   const parentFolderId = useMemo(() => {
@@ -236,27 +276,13 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     return null;
   }, [listing.breadcrumbs]);
 
-  const goBack = useCallback(() => {
-    if (historyIndex > 0) {
-      setSearchQuery("");
-      setHistoryIndex((i) => i - 1);
-    }
-  }, [historyIndex]);
-
-  const goForward = useCallback(() => {
-    if (historyIndex < history.length - 1) {
-      setSearchQuery("");
-      setHistoryIndex((i) => i + 1);
-    }
-  }, [historyIndex, history.length]);
-
   const goUp = useCallback(() => {
     if (currentFolderId !== null) {
       navigateToFolder(parentFolderId);
     }
   }, [currentFolderId, parentFolderId, navigateToFolder]);
 
-  // Move items internally (onto folder, "..", or breadcrumb)
+  // Move items internally
   const handleMoveItemsToFolder = useCallback(
     async (targetFolderId: string | null, draggedIds: string[]) => {
       if (targetFolderId === currentFolderId) return;
@@ -275,7 +301,68 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     [currentFolderId, toItemIdentifiers, vaultInfo.id, refreshDirectory]
   );
 
-  // Pointer Drag Controller (handles both internal drag-to-folder and window-edge OS drag-out)
+  // Search vault
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (!q) {
+      setSearchResults(null);
+      return;
+    }
+
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      searchVault(q, vaultInfo.id, currentFolderId)
+        .then((res) => {
+          if (!cancelled) {
+            setSearchResults(res);
+          }
+        })
+        .catch(() => {});
+    }, 60);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [searchQuery, vaultInfo.id, currentFolderId]);
+
+  // Filtered lists
+  const filteredFolders = useMemo(() => {
+    const q = searchQuery.trim();
+    if (!q) return listing.folders;
+    const lower = q.toLowerCase();
+    if (searchResults) {
+      return searchResults.folders.filter((f) =>
+        f.name.toLowerCase().includes(lower)
+      );
+    }
+    return listing.folders.filter((f) => f.name.toLowerCase().includes(lower));
+  }, [listing.folders, searchQuery, searchResults]);
+
+  const filteredFiles = useMemo(() => {
+    const q = searchQuery.trim();
+    if (!q) return listing.files;
+    const lower = q.toLowerCase();
+    if (searchResults) {
+      return searchResults.files.filter((f) =>
+        f.original_name.toLowerCase().includes(lower)
+      );
+    }
+    return listing.files.filter((f) =>
+      f.original_name.toLowerCase().includes(lower)
+    );
+  }, [listing.files, searchQuery, searchResults]);
+
+  // Selection hook
+  const {
+    selectedIds,
+    setSelectedIds,
+    toggleSelect: handleToggleSelect,
+    selectAll: handleSelectAll,
+    clearSelection: handleClearSelection,
+  } = useWorkspaceSelection(filteredFolders, filteredFiles);
+
+  // Pointer drag controller
   useEffect(() => {
     if (!pointerDrag) return;
 
@@ -292,7 +379,6 @@ export const Workspace: React.FC<WorkspaceProps> = ({
 
       if (!isNowActive) return;
 
-      // If cursor approaches the window boundary while dragging, hand off to native Win32 OLE drag!
       const edgeThreshold = 14;
       const nearWindowEdge =
         e.clientX <= edgeThreshold ||
@@ -312,12 +398,9 @@ export const Workspace: React.FC<WorkspaceProps> = ({
         return;
       }
 
-      // Check if cursor is hovering over a valid internal folder drop target
       const el = document.elementFromPoint(e.clientX, e.clientY);
       const dropTargetEl = el?.closest<HTMLElement>("[data-drop-folder-id]");
       const rawDropId = dropTargetEl?.getAttribute("data-drop-folder-id") ?? null;
-
-      // Don't highlight a folder that is itself in the dragged set
       const validHoverId =
         rawDropId && !pointerDrag.ids.includes(rawDropId) ? rawDropId : null;
 
@@ -383,7 +466,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     [selectedIds]
   );
 
-  // Mouse Buttons 3 & 4 (Back / Forward) and Keyboard Shortcuts (including Delete key!)
+  // Keyboard Shortcuts (Delete, Backspace, Ctrl+A, Alt+Left/Right)
   useEffect(() => {
     if (!isActive) return;
 
@@ -427,7 +510,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
         goUp();
       } else if (e.key === "Delete" && selectedIds.size > 0) {
         e.preventDefault();
-        const items = toItemIdentifiers();
+        const items = toItemIdentifiers(Array.from(selectedIds));
         let singleName: string | undefined;
         if (items.length === 1) {
           const single = items[0];
@@ -442,10 +525,10 @@ export const Workspace: React.FC<WorkspaceProps> = ({
         });
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
         e.preventDefault();
-        const all = new Set<string>();
-        listing.folders.forEach((f) => all.add(f.id));
-        listing.files.forEach((f) => all.add(f.id));
-        setSelectedIds(all);
+        handleSelectAll();
+      } else if (e.key === "Escape" && selectedIds.size > 0) {
+        e.preventDefault();
+        handleClearSelection();
       }
     };
 
@@ -470,9 +553,10 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     toItemIdentifiers,
     listing.folders,
     listing.files,
+    handleSelectAll,
+    handleClearSelection,
   ]);
 
-  // Close vault handler
   const handleCloseVault = useCallback(async () => {
     try {
       await lockVaultInstance(vaultInfo.id);
@@ -483,7 +567,6 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     }
   }, [vaultInfo.id, onCloseVault]);
 
-  // Execute actual OS path ingestion
   const runIngestPaths = useCallback(
     async (paths: string[], shouldShred: boolean) => {
       setErrorBanner(null);
@@ -494,7 +577,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
           currentFolderId,
           shouldShred,
           vaultInfo.id,
-          compressFiles
+          isCompressed
         );
         await refreshDirectory(currentFolderId);
 
@@ -503,9 +586,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
           const first = report.skipped_files[0];
           if (count === 1) {
             setSkippedWarning(
-              `Imported ${report.imported_files} file${
-                report.imported_files === 1 ? "" : "s"
-              }. Skipped "${first.name}" (${first.reason}).`
+              `Imported ${report.imported_files} file. Skipped "${first.name}" (${first.reason}).`
             );
           } else {
             const sampleNames = report.skipped_files
@@ -513,7 +594,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
               .map((s) => `"${s.name}"`)
               .join(", ");
             setSkippedWarning(
-              `Imported ${report.imported_files} files. Skipped ${count} unreadable or antivirus-blocked files (${sampleNames}${
+              `Imported ${report.imported_files} files. Skipped ${count} unreadable or antivirus-locked files (${sampleNames}${
                 count > 3 ? ", ..." : ""
               } — ${first.reason}).`
             );
@@ -523,29 +604,26 @@ export const Workspace: React.FC<WorkspaceProps> = ({
         reportError(err);
       }
     },
-    [currentFolderId, vaultInfo.id, compressFiles, refreshDirectory, reportError]
+    [currentFolderId, vaultInfo.id, isCompressed, refreshDirectory, reportError]
   );
 
-  // OS Drag & Drop handler (with Shift-drag confirmation popup and .vault detection)
   const handleOsDrop = useCallback(
     async (paths: string[], shiftPressed: boolean) => {
       if (!paths || paths.length === 0) return;
       setErrorBanner(null);
 
-      // Check if user dropped a .vault file or vault directory
       if (paths.length === 1 && onOpenDroppedVault) {
         try {
-          const detectedVaultPath = await checkIsVaultPath(paths[0]);
-          if (detectedVaultPath) {
-            onOpenDroppedVault(detectedVaultPath);
+          const detected = await checkIsVaultPath(paths[0]);
+          if (detected) {
+            onOpenDroppedVault(detected);
             return;
           }
         } catch {
-          // proceed with normal file import
+          // ignore
         }
       }
 
-      // If Shift was held or Shred Originals is toggled on, ask for confirmation before shredding!
       if (shiftPressed || shredOriginals) {
         setShredPromptPaths(paths);
         return;
@@ -561,120 +639,6 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     onDrop: handleOsDrop,
   });
 
-  // Recursive search across current folder tree (or entire vault when at root)
-  useEffect(() => {
-    const q = searchQuery.trim();
-    if (!q) {
-      setSearchResults(null);
-      return;
-    }
-
-    let cancelled = false;
-    const timer = setTimeout(() => {
-      searchVault(q, vaultInfo.id, currentFolderId)
-        .then((res) => {
-          if (!cancelled) {
-            setSearchResults(res);
-          }
-        })
-        .catch(() => {
-          // keep existing results
-        });
-    }, 60);
-
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [searchQuery, vaultInfo.id, currentFolderId]);
-
-  // Filtered folders & files: smooth non-flickering search across keystrokes
-  const filteredFolders = useMemo(() => {
-    const q = searchQuery.trim();
-    if (!q) return listing.folders;
-    const lower = q.toLowerCase();
-    if (searchResults) {
-      return searchResults.folders.filter((f) => f.name.toLowerCase().includes(lower));
-    }
-    return listing.folders.filter((f) => f.name.toLowerCase().includes(lower));
-  }, [listing.folders, searchQuery, searchResults]);
-
-  const filteredFiles = useMemo(() => {
-    const q = searchQuery.trim();
-    if (!q) return listing.files;
-    const lower = q.toLowerCase();
-    if (searchResults) {
-      return searchResults.files.filter((f) =>
-        f.original_name.toLowerCase().includes(lower)
-      );
-    }
-    return listing.files.filter((f) =>
-      f.original_name.toLowerCase().includes(lower)
-    );
-  }, [listing.files, searchQuery, searchResults]);
-
-  // Ordered items for Shift+Click range selection
-  const orderedIds = useMemo(() => {
-    return [
-      ...filteredFolders.map((f) => f.id),
-      ...filteredFiles.map((f) => f.id),
-    ];
-  }, [filteredFolders, filteredFiles]);
-
-  // Selection handlers (normal click, Checkbox click, Ctrl+Click, Shift+Click range)
-  const handleToggleSelect = useCallback(
-    (
-      id: string,
-      _isFolder: boolean,
-      isCheckboxClick: boolean,
-      event: React.MouseEvent
-    ) => {
-      const isShift = event.shiftKey;
-      const isCtrl = event.ctrlKey || event.metaKey;
-
-      if (isShift && lastSelectedId && orderedIds.includes(lastSelectedId)) {
-        const startIdx = orderedIds.indexOf(lastSelectedId);
-        const endIdx = orderedIds.indexOf(id);
-        if (startIdx !== -1 && endIdx !== -1) {
-          const [low, high] =
-            startIdx < endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
-          const rangeIds = orderedIds.slice(low, high + 1);
-          setSelectedIds((prev) => {
-            const next =
-              isCtrl || isCheckboxClick ? new Set(prev) : new Set<string>();
-            rangeIds.forEach((rid) => next.add(rid));
-            return next;
-          });
-          return;
-        }
-      }
-
-      if (isCheckboxClick || isCtrl) {
-        setSelectedIds((prev) => {
-          const next = new Set(prev);
-          if (next.has(id)) next.delete(id);
-          else next.add(id);
-          return next;
-        });
-        setLastSelectedId(id);
-      } else {
-        setSelectedIds(new Set([id]));
-        setLastSelectedId(id);
-      }
-    },
-    [lastSelectedId, orderedIds]
-  );
-
-  const handleSelectAll = useCallback(() => {
-    setSelectedIds(new Set(orderedIds));
-  }, [orderedIds]);
-
-  const handleClearSelection = useCallback(() => {
-    setSelectedIds(new Set());
-    setLastSelectedId(null);
-  }, []);
-
-  // Import buttons
   const handleImportFiles = async () => {
     const selected = await open({
       multiple: true,
@@ -697,7 +661,6 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     await handleOsDrop(paths, false);
   };
 
-  // Export items to PC
   const handleExportItems = async (items: ItemIdentifier[]) => {
     if (items.length === 0) return;
 
@@ -716,7 +679,6 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     }
   };
 
-  // Context menu handler
   const handleContextMenu = (
     e: React.MouseEvent,
     type: "file" | "folder" | "parent" | null,
@@ -725,7 +687,6 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   ) => {
     if (id && type !== "parent" && !selectedIds.has(id)) {
       setSelectedIds(new Set([id]));
-      setLastSelectedId(id);
     }
 
     setContextMenu({
@@ -743,68 +704,56 @@ export const Workspace: React.FC<WorkspaceProps> = ({
 
   return (
     <div
-      className={`flex-1 flex flex-col bg-zinc-950 text-zinc-100 overflow-hidden select-none ${
+      className={`flex-1 flex flex-col bg-[#121010] text-stone-100 overflow-hidden select-none relative ${
         isActive ? "flex" : "hidden"
       } ${pointerDrag?.active ? "cursor-grabbing" : ""}`}
     >
-      {/* Top Header Bar */}
-      <HeaderBar
+      {/* Unified 52px Minimalist Header */}
+      <UnifiedHeader
         breadcrumbs={listing.breadcrumbs}
         hoveredDropFolderId={pointerDrag?.active ? pointerDrag.hoveredFolderId : null}
+        canGoBack={canGoBack}
+        canGoForward={canGoForward}
+        onGoBack={goBack}
+        onGoForward={goForward}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         viewMode={viewMode}
         onViewModeChange={setViewMode}
         gridSize={gridSize}
         onGridSizeChange={setGridSize}
-        canGoBack={canGoBack}
-        canGoForward={canGoForward}
-        onGoBack={goBack}
-        onGoForward={goForward}
         onNavigateBreadcrumb={navigateToFolder}
-        onCloseVault={handleCloseVault}
-      />
-
-      {/* Action Toolbar */}
-      <Toolbar
-        selectedCount={selectedIds.size}
-        totalCount={filteredFolders.length + filteredFiles.length}
-        shredOriginals={shredOriginals}
-        onToggleShred={setShredOriginals}
-        compressFiles={compressFiles}
-        onToggleCompress={setCompressFiles}
+        onNewFolder={() => setCreateFolderOpen(true)}
         onImportFiles={handleImportFiles}
         onImportFolder={handleImportDirectory}
-        onNewFolder={() => setCreateFolderOpen(true)}
+        onOpenSettings={() => setIsSettingsModalOpen(true)}
+        onCloseVault={handleCloseVault}
+        shredOriginals={shredOriginals}
+        onToggleShred={() => setShredOriginals((prev) => !prev)}
+        totalCount={filteredFolders.length + filteredFiles.length}
+        selectedCount={selectedIds.size}
         onSelectAll={handleSelectAll}
         onClearSelection={handleClearSelection}
-        onExportSelected={() => handleExportItems(toItemIdentifiers())}
-        onDeleteSelected={() => {
-          setDeleteModal({
-            open: true,
-            items: toItemIdentifiers(),
-          });
-        }}
       />
 
       {/* Error Banner */}
       {errorBanner && (
-        <div className="px-5 py-2.5 bg-red-950/60 border-b border-red-800/60 flex items-center justify-between text-xs text-red-200">
+        <div className="px-5 py-2.5 bg-rose-950/70 border-b border-rose-800/60 flex items-center justify-between text-xs text-rose-200">
           <div className="flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
             <span>{errorBanner}</span>
           </div>
           <button
             type="button"
             onClick={() => setErrorBanner(null)}
-            className="text-red-400 hover:text-red-200 p-0.5"
+            className="text-rose-400 hover:text-rose-200 p-0.5 cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
       )}
 
-      {/* Skipped Files Warning Banner (non-blocking — rest of import completed) */}
+      {/* Skipped Files Warning Banner */}
       {skippedWarning && (
         <div className="px-5 py-2.5 bg-amber-950/50 border-b border-amber-700/50 flex items-center justify-between text-xs text-amber-200">
           <div className="flex items-center gap-2">
@@ -814,14 +763,14 @@ export const Workspace: React.FC<WorkspaceProps> = ({
           <button
             type="button"
             onClick={() => setSkippedWarning(null)}
-            className="text-amber-400 hover:text-amber-200 p-0.5"
+            className="text-amber-400 hover:text-amber-200 p-0.5 cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
       )}
 
-      {/* Main Explorer Area */}
+      {/* Main File Explorer Area */}
       <FileExplorer
         vaultId={vaultInfo.id}
         folders={filteredFolders}
@@ -846,14 +795,38 @@ export const Workspace: React.FC<WorkspaceProps> = ({
         onNewFolder={() => setCreateFolderOpen(true)}
       />
 
-      {/* Floating Custom Pointer Drag Badge (zero banned symbol!) */}
+      {/* Sleek Floating Capsule for Selection Actions */}
+      <FloatingActionBar
+        selectedCount={selectedIds.size}
+        onClearSelection={handleClearSelection}
+        onExportSelected={() =>
+          handleExportItems(toItemIdentifiers(Array.from(selectedIds)))
+        }
+        onDeleteSelected={() => {
+          const items = toItemIdentifiers(Array.from(selectedIds));
+          let singleName: string | undefined;
+          if (items.length === 1) {
+            const single = items[0];
+            singleName = single.is_folder
+              ? listing.folders.find((f) => f.id === single.id)?.name
+              : listing.files.find((f) => f.id === single.id)?.original_name;
+          }
+          setDeleteModal({
+            open: true,
+            items,
+            singleName,
+          });
+        }}
+      />
+
+      {/* Floating Pointer Drag Badge */}
       {pointerDrag?.active && (
         <div
           style={{
             left: pointerDrag.x + 14,
             top: pointerDrag.y + 14,
           }}
-          className="pointer-events-none fixed z-50 flex items-center gap-2 px-3.5 py-2 rounded-xl bg-indigo-600/95 text-white text-xs font-medium shadow-2xl border border-indigo-400/50 backdrop-blur-md"
+          className="pointer-events-none fixed z-50 flex items-center gap-2 px-3.5 py-2 rounded-2xl bg-purple-600/95 text-white text-xs font-medium shadow-2xl border border-purple-400/50 backdrop-blur-md"
         >
           <FolderInput className="w-4 h-4 shrink-0" />
           <span className="truncate max-w-[200px]">{pointerDrag.label}</span>
@@ -865,7 +838,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
         </div>
       )}
 
-      {/* Full-Window Drag-and-Drop Overlay */}
+      {/* Drag & Drop Overlay */}
       <DropOverlay
         visible={isDraggingOver}
         shredOriginals={shredOriginals}
@@ -873,7 +846,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
         currentFolderName={currentFolderName}
       />
 
-      {/* Right-Click Context Menu */}
+      {/* Context Menu */}
       <ContextMenu
         menu={contextMenu}
         selectedCount={selectedIds.size}
@@ -893,7 +866,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
         }}
         onExportTarget={() => {
           if (selectedIds.size > 1) {
-            handleExportItems(toItemIdentifiers());
+            handleExportItems(toItemIdentifiers(Array.from(selectedIds)));
           } else if (contextMenu.targetId && contextMenu.targetType) {
             handleExportItems([
               {
@@ -933,7 +906,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
           if (selectedIds.size > 1) {
             setDeleteModal({
               open: true,
-              items: toItemIdentifiers(),
+              items: toItemIdentifiers(Array.from(selectedIds)),
             });
           } else if (contextMenu.targetId && contextMenu.targetType) {
             setDeleteModal({
@@ -956,7 +929,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
         onViewModeChange={setViewMode}
       />
 
-      {/* Create Folder Modal */}
+      {/* Modal: New Folder */}
       <NamePromptModal
         open={createFolderOpen}
         mode="create-folder"
@@ -967,7 +940,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
         }}
       />
 
-      {/* Rename Modal */}
+      {/* Modal: Rename */}
       <NamePromptModal
         open={renameModal.open}
         mode="rename"
@@ -985,7 +958,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
         }}
       />
 
-      {/* Delete Confirmation Modal */}
+      {/* Modal: Delete */}
       <DeleteConfirmModal
         open={deleteModal.open}
         count={deleteModal.items.length}
@@ -1000,7 +973,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
         }}
       />
 
-      {/* Shift-Drag / Shred Originals Confirmation Modal */}
+      {/* Modal: Shred Confirm */}
       <ShredConfirmModal
         open={shredPromptPaths !== null}
         paths={shredPromptPaths || []}
@@ -1017,14 +990,14 @@ export const Workspace: React.FC<WorkspaceProps> = ({
         }}
       />
 
-      {/* Insufficient Disk Space Warning Modal */}
+      {/* Modal: Disk Space Warning */}
       <DiskSpaceWarningModal
         open={diskSpaceError !== null}
         errorMessage={diskSpaceError || ""}
         onClose={() => setDiskSpaceError(null)}
       />
 
-      {/* In-App File & Media Viewer Modal */}
+      {/* Modal: Media Preview */}
       <PreviewModal
         vaultId={vaultInfo.id}
         file={previewFile}
@@ -1034,6 +1007,29 @@ export const Workspace: React.FC<WorkspaceProps> = ({
         onExport={(file) =>
           handleExportItems([{ id: file.id, is_folder: false }])
         }
+      />
+
+      {/* Modal: Vault Settings */}
+      <VaultSettingsModal
+        open={isSettingsModalOpen}
+        vaultInfo={vaultInfo}
+        isCompressed={isCompressed}
+        onClose={() => setIsSettingsModalOpen(false)}
+        onRequestChangeCompression={handleRequestChangeCompression}
+      />
+
+      {/* Modal: Compression Confirmation */}
+      <CompressionConfirmModal
+        open={isCompressionConfirmOpen}
+        enable={targetCompressionState}
+        onClose={() => setIsCompressionConfirmOpen(false)}
+        onConfirm={handleConfirmCompressionChange}
+      />
+
+      {/* Modal: Compression Progress */}
+      <CompressionProgressModal
+        open={compressionProgress !== null}
+        progress={compressionProgress}
       />
     </div>
   );

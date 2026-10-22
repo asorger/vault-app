@@ -44,7 +44,7 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: './src-tauri -> target'
+          workspaces: "src-tauri -> src-tauri/target"
 
       - name: Set up Perl (Strawberry)
         uses: shogo82148/actions-setup-perl@v1
@@ -116,7 +116,7 @@ jobs:
       - name: Quality Gate (Backend Tests)
         shell: bash
         run: |
-          cargo test --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
+          cargo test --manifest-path src-tauri/Cargo.toml --release --target x86_64-pc-windows-msvc
 
       - name: Build Tauri Installers & Publish Release
         uses: tauri-apps/tauri-action@v0
